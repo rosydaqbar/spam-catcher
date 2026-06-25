@@ -474,6 +474,15 @@ function createSpamCatcherManager({ client, configStore }) {
     await sendOrUpdateReviewMessage(guild, event).catch(() => null);
   }
 
+  async function notifyTimeoutRemoved(guild, event) {
+    return dmUser(event.userId, {
+      content: [
+        `Your timeout in ${guild.name} has been lifted by the admins.`,
+        'You can send messages again.',
+      ].join('\n'),
+    });
+  }
+
   async function handleMessage(message) {
     if (!message.guild || !message.member || message.author?.bot || message.webhookId) return;
     if (!isGuildAllowed(message.guild.id)) return;
@@ -683,10 +692,16 @@ function createSpamCatcherManager({ client, configStore }) {
     }
 
     const updated = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => event);
+    const dmSent = interaction.guild
+      ? await notifyTimeoutRemoved(interaction.guild, updated || event).catch(() => false)
+      : false;
     await interaction.update(buildResolvedReviewComponents(updated || event)).catch(async () => {
       await interaction.reply({ content: 'Timeout removed, but failed to update review message.', flags: MessageFlags.Ephemeral }).catch(() => null);
     });
-    await logAction(updated || event, 'Spam Catcher Timeout Removed', [`- Removed by: <@${interaction.user.id}>`]);
+    await logAction(updated || event, 'Spam Catcher Timeout Removed', [
+      `- Removed by: <@${interaction.user.id}>`,
+      `- DM sent: \`${dmSent ? 'yes' : 'no'}\``,
+    ]);
   }
 
   async function handleBanUser(interaction) {

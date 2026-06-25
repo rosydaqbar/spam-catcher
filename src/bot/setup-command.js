@@ -7,15 +7,42 @@ const {
   MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 const {
   ContainerBuilder,
   SeparatorBuilder,
+  SectionBuilder,
   TextDisplayBuilder,
 } = require('@discordjs/builders');
+const { createLogger } = require('../lib/logger');
 
 const COMMAND_NAME = 'spam-catcher';
 const SETUP_PREFIX = 'spamsetup';
+const logger = createLogger('spam-catcher-setup');
+
+const TIMEOUT_OPTIONS = [
+  { label: '10 Minutes', value: '10' },
+  { label: '30 Minutes', value: '30' },
+  { label: '1 Hour', value: '60' },
+  { label: '6 Hours', value: '360' },
+  { label: '12 Hours', value: '720' },
+  { label: '1 Day', value: '1440' },
+  { label: '3 Days', value: '4320' },
+  { label: '7 Days', value: '10080' },
+  { label: '14 Days', value: '20160' },
+  { label: '28 Days', value: '40320' },
+];
+
+const APPEAL_WINDOW_OPTIONS = [
+  { label: '10 Minutes', value: '10' },
+  { label: '30 Minutes', value: '30' },
+  { label: '1 Hour', value: '60' },
+  { label: '2 Hours', value: '120' },
+  { label: '6 Hours', value: '360' },
+  { label: '12 Hours', value: '720' },
+  { label: '24 Hours', value: '1440' },
+];
 
 function createSetupCommandManager({ client, configStore }) {
   function commandData() {
@@ -96,11 +123,11 @@ function createSetupCommandManager({ client, configStore }) {
     return `${safeMinutes} minute${safeMinutes === 1 ? '' : 's'}`;
   }
 
-  function actionLabel(config) {
-    if (!config.autoBanEnabled) return `Timeout only (${formatMinutes(config.timeoutMinutes)})`;
-    if (config.banMode === 'immediate') return 'Immediate ban';
-    if (config.banMode === 'after_timeout') return `Timeout, then ban after ${formatMinutes(config.timeoutMinutes)}`;
-    return `Timeout, then delayed ban after ${formatMinutes(config.banDelayMinutes)}`;
+  function outcomeLabel(config) {
+    if (!config.autoBanEnabled) return `Timeout for ${formatMinutes(config.timeoutMinutes)}. No automatic ban.`;
+    if (config.banMode === 'immediate') return 'Ban immediately. No timeout or appeal window.';
+    if (config.banMode === 'after_timeout') return `Timeout for ${formatMinutes(config.timeoutMinutes)}, then ban when timeout ends.`;
+    return `Timeout for ${formatMinutes(config.timeoutMinutes)}, then ban after ${formatMinutes(config.banDelayMinutes)} appeal window.`;
   }
 
   function setupStatus(config) {
@@ -112,26 +139,100 @@ function createSetupCommandManager({ client, configStore }) {
     return `Incomplete: missing ${missing.join(', ')}`;
   }
 
-  function buildSetupPayload(guildId, config, statusMessage, { ephemeral = false } = {}) {
-    const isReady = config.channelIds.length > 0 && config.reviewChannelId && config.logChannelId;
-    const flags = MessageFlags.IsComponentsV2 | (ephemeral ? MessageFlags.Ephemeral : 0);
-    const status = statusMessage ? `\n- Last action: ${statusMessage}` : '';
+  function isConfigReady(config) {
+    return Boolean(config.channelIds.length > 0 && config.reviewChannelId && config.logChannelId);
+  }
 
-    const container = new ContainerBuilder()
-      .setAccentColor(config.enabled ? 0x22c55e : 0xf59e0b)
+  function selectOptions(options, currentValue) {
+    const current = Number(currentValue);
+    return options.map((option) => ({
+      ...option,
+      default: Number(option.value) === current,
+    }));
+  }
+
+  function buttonSection(title, body, button) {
+    return new SectionBuilder()
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
-          '### Spam Catcher Setup',
-          `- Guild: \`${guildId}\``,
-          `- Status: **${setupStatus(config)}**${status}`,
+          `### ${title}`,
+          body,
+        ].filter(Boolean).join('\n'))
+      )
+      .setButtonAccessory(button);
+  }
+
+  function buildSetupPayload(guildId, config, statusMessage, { ephemeral = false } = {}) {
+    const isReady = isConfigReady(config);
+    const flags = MessageFlags.IsComponentsV2 | (ephemeral ? MessageFlags.Ephemeral : 0);
+    const statusLabel = config.enabled ? 'ON' : isReady ? 'OFF, READY' : 'OFF, NEEDS CHANNELS';
+    const statusAccent = config.enabled ? 0x22c55e : isReady ? 0xf59e0b : 0xef4444;
+    const statusLine = statusMessage ? `\n-# Last action: ${statusMessage}` : '';
+    const toggleButton = config.enabled
+      ? new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:disable`)
+        .setLabel('Disable Spam Catcher')
+        .setStyle(ButtonStyle.Danger)
+      : new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:enable`)
+        .setLabel('Enable Spam Catcher')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!isReady);
+    const autoBanButton = config.autoBanEnabled
+      ? new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:autoban:off`)
+        .setLabel('Turn Auto Ban Off')
+        .setStyle(ButtonStyle.Secondary)
+      : new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:autoban:on`)
+        .setLabel('Turn Auto Ban On')
+        .setStyle(ButtonStyle.Danger);
+
+    const statusContainer = new ContainerBuilder()
+      .setAccentColor(statusAccent)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          '# Spam Catcher Setup',
+          `\`Guild\` ${guildId}`,
           '',
-          `- Trap channels: ${mentionChannels(config.channelIds)}`,
-          `- Review channel: ${mentionChannel(config.reviewChannelId)}`,
-          `- Log channel: ${mentionChannel(config.logChannelId)}`,
-          `- Action: **${actionLabel(config)}**`,
+          `**Status:** \`${statusLabel}\``,
+          `**Config:** ${setupStatus(config)}`,
+          `**Result:** ${outcomeLabel(config)}${statusLine}`,
         ].join('\n'))
       )
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addSectionComponents(
+        buttonSection(
+          config.enabled ? 'Spam Catcher Is On' : 'Spam Catcher Is Off',
+          config.enabled
+            ? 'Trap-channel messages are handled using the settings below. Changing channels or timing saves immediately.'
+            : isReady
+              ? 'Settings are saved, but trap-channel messages are ignored until you enable Spam Catcher.'
+              : 'Set trap, review, and log channels before turning Spam Catcher on.',
+          toggleButton
+        )
+      )
+      .addActionRowComponents(
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`${SETUP_PREFIX}:refresh`)
+            .setLabel('Refresh')
+            .setStyle(ButtonStyle.Secondary)
+        )
+      );
+
+    const channelsContainer = new ContainerBuilder()
+      .setAccentColor(isReady ? 0x22c55e : 0x3b82f6)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          '## Channels',
+          `**Trap:** ${mentionChannels(config.channelIds)}`,
+          `**Review:** ${mentionChannel(config.reviewChannelId)}`,
+          `**Log:** ${mentionChannel(config.logChannelId)}`,
+          '',
+          '-# Selections save immediately.',
+        ].join('\n'))
+      )
       .addActionRowComponents(
         new ActionRowBuilder().addComponents(
           new ChannelSelectMenuBuilder()
@@ -140,6 +241,7 @@ function createSetupCommandManager({ client, configStore }) {
             .setChannelTypes(ChannelType.GuildText)
             .setMinValues(1)
             .setMaxValues(25)
+            .setDefaultChannels(config.channelIds)
         )
       )
       .addActionRowComponents(
@@ -150,6 +252,7 @@ function createSetupCommandManager({ client, configStore }) {
             .setChannelTypes(ChannelType.GuildText)
             .setMinValues(1)
             .setMaxValues(1)
+            .setDefaultChannels(config.reviewChannelId ? [config.reviewChannelId] : [])
         )
       )
       .addActionRowComponents(
@@ -160,59 +263,102 @@ function createSetupCommandManager({ client, configStore }) {
             .setChannelTypes(ChannelType.GuildText)
             .setMinValues(1)
             .setMaxValues(1)
+            .setDefaultChannels(config.logChannelId ? [config.logChannelId] : [])
         )
       )
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          '## Timeout',
+          `Current timeout is **${formatMinutes(config.timeoutMinutes)}**.`,
+          '-# Used by Timeout Only, Ban After Appeal Window, and Ban After Timeout Ends. Ban Immediately skips timeout.',
+        ].join('\n'))
+      )
       .addActionRowComponents(
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:enable`)
-            .setLabel('Enable')
-            .setStyle(ButtonStyle.Success)
-            .setDisabled(!isReady || config.enabled),
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:disable`)
-            .setLabel('Disable')
-            .setStyle(ButtonStyle.Danger)
-            .setDisabled(!config.enabled),
+          new StringSelectMenuBuilder()
+            .setCustomId(`${SETUP_PREFIX}:timeout`)
+            .setPlaceholder(`Timeout: ${formatMinutes(config.timeoutMinutes)}`)
+            .addOptions(selectOptions(TIMEOUT_OPTIONS, config.timeoutMinutes))
+        )
+      );
+
+    const autoBanContainer = new ContainerBuilder()
+      .setAccentColor(config.autoBanEnabled ? 0xef4444 : 0xf59e0b)
+      .addSectionComponents(
+        buttonSection(
+          config.autoBanEnabled ? 'Auto Ban Is On' : 'Auto Ban Is Off',
+          config.autoBanEnabled
+            ? 'Caught users are banned using the ban timing below.'
+            : 'Caught users receive timeout only. No automatic ban is scheduled.',
+          autoBanButton
+        )
+      );
+
+    if (config.autoBanEnabled) {
+      autoBanContainer
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent([
+            '## Ban Timing',
+            'Choose when Auto Ban happens.',
+          ].join('\n'))
+        )
+        .addActionRowComponents(
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`${SETUP_PREFIX}:mode:delayed`)
+              .setLabel('Ban After Appeal Window')
+              .setStyle(config.banMode === 'delayed' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+            new ButtonBuilder()
+              .setCustomId(`${SETUP_PREFIX}:mode:immediate`)
+              .setLabel('Ban Immediately')
+              .setStyle(config.banMode === 'immediate' ? ButtonStyle.Danger : ButtonStyle.Secondary),
+            new ButtonBuilder()
+              .setCustomId(`${SETUP_PREFIX}:mode:after_timeout`)
+              .setLabel('Ban After Timeout Ends')
+              .setStyle(config.banMode === 'after_timeout' ? ButtonStyle.Primary : ButtonStyle.Secondary)
+          )
+        );
+    }
+
+    if (config.autoBanEnabled && config.banMode === 'delayed') {
+      autoBanContainer
+        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent([
+            '## Appeal Window',
+            `Current appeal window: **${formatMinutes(config.banDelayMinutes)}**`,
+            'Shown only for Ban After Appeal Window.',
+          ].join('\n'))
+        )
+        .addActionRowComponents(
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`${SETUP_PREFIX}:delay`)
+              .setPlaceholder(`Appeal window: ${formatMinutes(config.banDelayMinutes)}`)
+              .addOptions(selectOptions(APPEAL_WINDOW_OPTIONS, config.banDelayMinutes))
+          )
+        );
+    }
+
+    const noticesContainer = new ContainerBuilder()
+      .setAccentColor(0x8b5cf6)
+      .addSectionComponents(
+        buttonSection(
+          'Trap Notices',
+          'Post or refresh the warning message in each trap channel using the current timeout and Auto Ban settings.',
           new ButtonBuilder()
             .setCustomId(`${SETUP_PREFIX}:post_notices`)
-            .setLabel('Post Notices')
+            .setLabel('Post/Update Notices')
             .setStyle(ButtonStyle.Primary)
-            .setDisabled(!isReady),
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:refresh`)
-            .setLabel('Refresh')
-            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(!isReady)
         )
-      )
-      .addActionRowComponents(
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:mode:timeout`)
-            .setLabel('Timeout Only')
-            .setStyle(!config.autoBanEnabled ? ButtonStyle.Primary : ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:mode:delayed`)
-            .setLabel('Delayed Ban')
-            .setStyle(config.autoBanEnabled && config.banMode === 'delayed' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:mode:after_timeout`)
-            .setLabel('Ban After Timeout')
-            .setStyle(config.autoBanEnabled && config.banMode === 'after_timeout' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId(`${SETUP_PREFIX}:mode:immediate`)
-            .setLabel('Immediate Ban')
-            .setStyle(config.autoBanEnabled && config.banMode === 'immediate' ? ButtonStyle.Danger : ButtonStyle.Secondary)
-        )
-      )
-      .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent('-# Select channels first, then enable Spam Catcher. Use Post Notices to place warning messages in trap channels. Fine-tune durations with `npm run config:upsert`.')
       );
 
     return {
       flags,
-      components: [container],
+      components: [statusContainer, channelsContainer, autoBanContainer, noticesContainer],
       allowedMentions: { parse: [] },
     };
   }
@@ -222,6 +368,32 @@ function createSetupCommandManager({ client, configStore }) {
     url.searchParams.set('with_components', 'true');
     url.searchParams.set('wait', 'true');
     return url.toString();
+  }
+
+  function webhookEditUrl(webhookUrl, messageId) {
+    const url = new URL(webhookUrl);
+    url.pathname = `${url.pathname.replace(/\/$/, '')}/messages/${messageId}`;
+    url.searchParams.set('with_components', 'true');
+    return url.toString();
+  }
+
+  function errorMeta(error) {
+    return {
+      name: error?.name,
+      message: error?.message || String(error),
+      code: error?.code,
+      stack: error?.stack,
+    };
+  }
+
+  async function responseMeta(response) {
+    if (!response) return { status: 'no_response' };
+    const body = await response.text().catch(() => '');
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      body: body.slice(0, 1000),
+    };
   }
 
   function buildTrapNoticePayload(caughtCount, config) {
@@ -283,36 +455,197 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function postTrapNotices(guild, config) {
     const notices = [];
+    const failures = [];
     const webhookByChannel = new Map(
       config.webhookEnabled ? config.webhookUrls.map((item) => [item.channelId, item.webhookUrl]) : []
     );
 
+    logger.info('Post/update trap notices started', {
+      guildId: guild.id,
+      channelIds: config.channelIds,
+      webhookEnabled: config.webhookEnabled,
+      webhookChannelCount: webhookByChannel.size,
+    });
+
+    function fail(channelId, stage, details) {
+      failures.push({ channelId, stage });
+      logger.warn('Post/update trap notice failed', {
+        guildId: guild.id,
+        channelId,
+        stage,
+        ...details,
+      });
+    }
+
+    function warn(channelId, stage, details) {
+      logger.warn('Post/update trap notice warning', {
+        guildId: guild.id,
+        channelId,
+        stage,
+        ...details,
+      });
+    }
+
     for (const channelId of config.channelIds) {
-      const count = await configStore.getSpamCatcherCaughtCount(guild.id, channelId).catch(() => 0);
+      let count = 0;
+      try {
+        count = await configStore.getSpamCatcherCaughtCount(guild.id, channelId);
+      } catch (error) {
+        logger.warn('Failed to load Spam Catcher caught count for trap notice', {
+          guildId: guild.id,
+          channelId,
+          error: errorMeta(error),
+        });
+      }
+
       const payload = buildTrapNoticePayload(count, config);
       const webhookUrl = webhookByChannel.get(channelId);
+      let existing = null;
+      try {
+        existing = await configStore.getSpamCatcherNoticeMessage(guild.id, channelId);
+      } catch (error) {
+        logger.warn('Failed to load existing Spam Catcher notice message', {
+          guildId: guild.id,
+          channelId,
+          error: errorMeta(error),
+        });
+      }
+
+      logger.info('Post/update trap notice channel started', {
+        guildId: guild.id,
+        channelId,
+        deliveryMethod: webhookUrl ? 'webhook' : 'bot',
+        existingMessageId: existing?.messageId || null,
+        existingDeliveryMethod: existing?.deliveryMethod || null,
+      });
 
       if (webhookUrl) {
-        const response = await fetch(webhookPostUrl(webhookUrl), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }).catch(() => null);
-        if (response?.ok) {
-          const message = await response.json().catch(() => null);
-          if (message?.id) notices.push({ channelId, messageId: message.id, deliveryMethod: 'webhook', webhookUrl });
+        if (existing?.messageId && existing.deliveryMethod === 'webhook' && existing.webhookUrl) {
+          try {
+            const edited = await fetch(webhookEditUrl(existing.webhookUrl, existing.messageId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (edited.ok) {
+              notices.push({ channelId, messageId: existing.messageId, deliveryMethod: 'webhook', webhookUrl: existing.webhookUrl });
+              logger.info('Updated Spam Catcher trap notice via webhook', {
+                guildId: guild.id,
+                channelId,
+                messageId: existing.messageId,
+              });
+              continue;
+            }
+            warn(channelId, 'webhook_edit_response', await responseMeta(edited));
+          } catch (error) {
+            warn(channelId, 'webhook_edit_request', { error: errorMeta(error) });
+          }
+        }
+
+        try {
+          const response = await fetch(webhookPostUrl(webhookUrl), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!response.ok) {
+            fail(channelId, 'webhook_post_response', await responseMeta(response));
+            continue;
+          }
+
+          let parseFailed = false;
+          const message = await response.json().catch((error) => {
+            parseFailed = true;
+            fail(channelId, 'webhook_post_parse', { error: errorMeta(error) });
+            return null;
+          });
+          if (message?.id) {
+            notices.push({ channelId, messageId: message.id, deliveryMethod: 'webhook', webhookUrl });
+            logger.info('Posted Spam Catcher trap notice via webhook', {
+              guildId: guild.id,
+              channelId,
+              messageId: message.id,
+            });
+          } else if (!parseFailed) {
+            fail(channelId, 'webhook_post_missing_message_id', { responseMessage: message });
+          }
+        } catch (error) {
+          fail(channelId, 'webhook_post_request', { error: errorMeta(error) });
         }
         continue;
       }
 
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      if (!channel?.isTextBased()) continue;
-      const message = await channel.send(payload).catch(() => null);
-      if (message?.id) notices.push({ channelId, messageId: message.id, deliveryMethod: 'bot' });
+      const channel = await guild.channels.fetch(channelId).catch((error) => {
+        fail(channelId, 'channel_fetch', { error: errorMeta(error) });
+        return null;
+      });
+      if (!channel) continue;
+      if (!channel.isTextBased()) {
+        fail(channelId, 'channel_not_text_based', { channelType: channel.type });
+        continue;
+      }
+      if (existing?.messageId && existing.deliveryMethod === 'bot') {
+        const existingMessage = await channel.messages.fetch(existing.messageId).catch((error) => {
+          logger.warn('Failed to fetch existing Spam Catcher trap notice message', {
+            guildId: guild.id,
+            channelId,
+            messageId: existing.messageId,
+            error: errorMeta(error),
+          });
+          return null;
+        });
+        const edited = existingMessage ? await existingMessage.edit(payload).catch((error) => {
+          warn(channelId, 'bot_message_edit', { messageId: existing.messageId, error: errorMeta(error) });
+          return null;
+        }) : null;
+        if (edited?.id) {
+          notices.push({ channelId, messageId: edited.id, deliveryMethod: 'bot' });
+          logger.info('Updated Spam Catcher trap notice via bot message', {
+            guildId: guild.id,
+            channelId,
+            messageId: edited.id,
+          });
+          continue;
+        }
+      }
+
+      const message = await channel.send(payload).catch((error) => {
+        fail(channelId, 'bot_message_send', { error: errorMeta(error) });
+        return null;
+      });
+      if (message?.id) {
+        notices.push({ channelId, messageId: message.id, deliveryMethod: 'bot' });
+        logger.info('Posted Spam Catcher trap notice via bot message', {
+          guildId: guild.id,
+          channelId,
+          messageId: message.id,
+        });
+      } else if (message === null) {
+        // send failure already logged above
+      } else {
+        fail(channelId, 'bot_message_missing_id', { message });
+      }
     }
 
-    await configStore.saveSpamCatcherNoticeMessages(guild.id, notices);
-    return notices;
+    try {
+      await configStore.saveSpamCatcherNoticeMessages(guild.id, notices);
+    } catch (error) {
+      failures.push({ channelId: null, stage: 'save_notice_messages' });
+      logger.error('Failed to save Spam Catcher trap notice message records', {
+        guildId: guild.id,
+        noticeCount: notices.length,
+        error: errorMeta(error),
+      });
+    }
+
+    logger.info('Post/update trap notices finished', {
+      guildId: guild.id,
+      requested: config.channelIds.length,
+      succeeded: notices.length,
+      failed: failures.length,
+    });
+
+    return { notices, failures };
   }
 
   async function handleSetupCommand(interaction) {
@@ -346,6 +679,14 @@ function createSetupCommandManager({ client, configStore }) {
       await saveAndUpdate(interaction, { ...config, logChannelId: interaction.values[0] }, 'Log channel saved.');
       return true;
     }
+    if (type === 'timeout') {
+      await saveAndUpdate(interaction, { ...config, timeoutMinutes: Number(interaction.values[0]) }, 'Timeout duration saved.');
+      return true;
+    }
+    if (type === 'delay') {
+      await saveAndUpdate(interaction, { ...config, banDelayMinutes: Number(interaction.values[0]) }, 'Appeal window saved.');
+      return true;
+    }
     return false;
   }
 
@@ -360,6 +701,14 @@ function createSetupCommandManager({ client, configStore }) {
     }
 
     if (action === 'enable') {
+      if (!isConfigReady(config)) {
+        await interaction.update(buildSetupPayload(
+          interaction.guildId,
+          config,
+          'Cannot enable yet: set trap, review, and log channels first.'
+        ));
+        return true;
+      }
       await saveAndUpdate(interaction, { ...config, enabled: true }, 'Spam Catcher enabled.');
       return true;
     }
@@ -369,11 +718,20 @@ function createSetupCommandManager({ client, configStore }) {
       return true;
     }
 
+    if (action === 'autoban') {
+      const nextConfig = value === 'on'
+        ? { ...config, autoBanEnabled: true }
+        : { ...config, autoBanEnabled: false };
+      await saveAndUpdate(
+        interaction,
+        nextConfig,
+        value === 'on' ? 'Auto Ban enabled. Choose ban timing below.' : 'Auto Ban disabled. Users will be timed out only.'
+      );
+      return true;
+    }
+
     if (action === 'mode') {
-      const nextConfig = value === 'timeout'
-        ? { ...config, autoBanEnabled: false, banMode: 'delayed' }
-        : { ...config, autoBanEnabled: true, banMode: value };
-      await saveAndUpdate(interaction, nextConfig, 'Moderation mode saved.');
+      await saveAndUpdate(interaction, { ...config, autoBanEnabled: true, banMode: value }, 'Ban timing saved.');
       return true;
     }
 
@@ -390,11 +748,30 @@ function createSetupCommandManager({ client, configStore }) {
     if (action === 'post_notices') {
       await interaction.deferUpdate().catch(() => null);
       const saved = await configStore.getSpamCatcherConfig(interaction.guildId);
-      const notices = await postTrapNotices(interaction.guild, saved);
+      let result;
+      try {
+        result = await postTrapNotices(interaction.guild, saved);
+      } catch (error) {
+        logger.error('Post/update trap notices crashed', {
+          guildId: interaction.guildId,
+          error: errorMeta(error),
+        });
+        await interaction.editReply(buildSetupPayload(
+          interaction.guildId,
+          saved,
+          'Post/update notices failed. Check bot logs.'
+        )).catch(() => null);
+        return true;
+      }
+      const notices = result.notices || [];
+      const failures = result.failures || [];
+      const statusMessage = failures.length > 0
+        ? `Post/update notices finished: ${notices.length}/${saved.channelIds.length} succeeded, ${failures.length} failed. Check bot logs.`
+        : `Post/update notices finished: ${notices.length}/${saved.channelIds.length} succeeded.`;
       await interaction.editReply(buildSetupPayload(
         interaction.guildId,
         saved,
-        `Posted ${notices.length} notice message${notices.length === 1 ? '' : 's'}.`
+        statusMessage
       )).catch(() => null);
       return true;
     }
@@ -408,7 +785,8 @@ function createSetupCommandManager({ client, configStore }) {
       && interaction.options.getSubcommand(false) === 'setup') {
       return handleSetupCommand(interaction);
     }
-    if (interaction.isChannelSelectMenu?.() && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {
+    if ((interaction.isChannelSelectMenu?.() || interaction.isStringSelectMenu?.())
+      && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {
       return handleSelect(interaction);
     }
     if (interaction.isButton() && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {

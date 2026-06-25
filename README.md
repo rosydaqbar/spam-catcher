@@ -1,38 +1,62 @@
 # Spam Catcher
 
-Standalone Discord Spam Catcher bot extracted from `rosydaqbar/lfg-tool`.
+Standalone Discord bot for trap channels. If a non-admin user posts in a configured trap channel, the bot records the event and applies the configured action: timeout only, immediate ban, ban after timeout, or ban after an appeal window.
 
-It watches configured trap text channels. When a non-admin user posts in one, it records the event and either times them out, bans them immediately, or schedules a delayed ban with an appeal window.
+Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by default.
 
-## Included
+## Requirements
 
-- `src/bot/spam-catcher.js`: copied Spam Catcher runtime logic.
-- `src/config-store.js`: trimmed Postgres storage for Spam Catcher config, events, and notice messages.
-- `scripts/post-notices.js`: posts trap-channel warning notices and stores their message IDs for live count updates.
-- `scripts/upsert-guild-config.js`: creates or updates one guild's Spam Catcher config.
-- `scripts/list-guild-configs.js`: lists configured guilds.
-- `scripts/schema-postgres.sql`: optional SQL schema if you want to create tables manually.
-- `/spam-catcher setup`: in-Discord Component V2 setup panel for server admins.
+- Node.js `18+`
+- PostgreSQL `12+` recommended
+- Discord application with bot user
+- Bot invited with `bot` and `applications.commands` scopes
+- Bot permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`
 
-## Not Included
+`Moderate Members` is needed for timeout and timeout removal. `Ban Members` is needed only when Auto Ban is enabled.
 
-The LFG bot, voice logging, dashboard, landing page, and setup wizard from `lfg-tool` were intentionally not copied.
-
-## Setup
-
-1. Install dependencies:
+## Install
 
 ```bash
 npm install
-```
-
-2. Create your env file:
-
-```bash
 cp .env.example .env
+npm run check
 ```
 
-3. Fill in runtime values in `.env`:
+## Discord Bot Setup
+
+1. Create app in Discord Developer Portal.
+2. Create bot user and copy bot token into `.env` as `DISCORD_TOKEN`.
+3. Enable the bot in the app installation settings.
+4. Invite the bot with scopes `bot` and `applications.commands`.
+5. Grant these permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`.
+6. Start the bot once so it registers `/spam-catcher setup`.
+
+The bot uses `Guilds` and `GuildMessages` gateway intents. It does not need Message Content intent because it only checks channel, author, member, and guild metadata.
+
+## Database
+
+Use PostgreSQL. Tables auto-create at runtime, or you can apply `scripts/schema-postgres.sql` manually.
+
+Required tables:
+
+- `spam_catcher_config`
+- `spam_catcher_events`
+- `spam_catcher_notice_messages`
+
+For VPS/local PostgreSQL setup, read `setup.md`.
+
+Recommended local VPS connection:
+
+```env
+DATABASE_URL=postgresql://spamcatcher:password@127.0.0.1:5432/spam_catcher
+PG_SSL_MODE=disable
+```
+
+Do not expose PostgreSQL publicly. Keep it on `127.0.0.1` or private network.
+
+## Environment
+
+`.env` is runtime-only:
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token
@@ -40,27 +64,108 @@ DATABASE_URL=postgresql://spamcatcher:password@127.0.0.1:5432/spam_catcher
 PG_SSL_MODE=disable
 BOT_POSTGRES_POOL_MAX=2
 ALLOWED_GUILD_IDS=
+DEBUG=false
 ```
 
-Guild IDs, trap channels, review channel, log channel, and moderation behavior are stored in the database per guild, not in `.env`.
+Do not put guild IDs, channel IDs, timeout settings, or ban settings in `.env`. Those are saved per guild in `spam_catcher_config.config_json`.
 
-4. Invite the bot with these Discord permissions:
+`ALLOWED_GUILD_IDS` is optional. Empty means any guild can work if it has enabled database config.
 
-- View Channels
-- Send Messages
-- Read Message History
-- Moderate Members, for timeout mode
-- Ban Members, for ban modes
+## Launch
 
-5. Add one guild config from Discord:
+```bash
+npm start
+```
+
+On startup the bot:
+
+- logs in to Discord
+- registers `/spam-catcher setup`
+- starts the delayed-ban loop
+- creates missing PostgreSQL tables when needed
+
+For production, run it under a process manager such as `systemd`, `pm2`, or Docker.
+
+## Configure A Server
+
+Run inside the Discord server as an Administrator:
 
 ```text
 /spam-catcher setup
 ```
 
-The setup panel uses Component V2 and lets a server admin select trap channels, review channel, log channel, moderation mode, enable/disable the feature, and post trap notices.
+The setup panel uses Discord Component V2 and has four containers:
 
-CLI setup is also available:
+- `Spam Catcher Setup`: status, current result, enable/disable button, refresh button
+- `Channels`: trap channels, review channel, log channel, timeout duration
+- `Auto Ban`: Auto Ban on/off, ban timing, appeal window when needed
+- `Trap Notices`: post or update warning notices in trap channels
+
+Saved trap/review/log channels are preselected when reopening the setup panel.
+
+Settings save immediately. `Enable Spam Catcher` only controls whether trap-channel messages are handled. Enable is blocked until trap, review, and log channels are set.
+
+## Timeout And Ban Options
+
+Timeout options in `/spam-catcher setup`:
+
+- `10 Minutes`
+- `30 Minutes`
+- `1 Hour`
+- `6 Hours`
+- `12 Hours`
+- `1 Day`
+- `3 Days`
+- `7 Days`
+- `14 Days`
+- `28 Days`
+
+Auto Ban modes:
+
+- `Auto Ban Off`: timeout only, no automatic ban
+- `Ban After Appeal Window`: timeout first, then ban after selected appeal window
+- `Ban Immediately`: ban right away, no timeout
+- `Ban After Timeout Ends`: timeout first, ban when timeout expires
+
+Appeal window options:
+
+- `10 Minutes`
+- `30 Minutes`
+- `1 Hour`
+- `2 Hours`
+- `6 Hours`
+- `12 Hours`
+- `24 Hours`
+
+When an admin removes a timeout from the review card, the bot DMs the user that the timeout has been lifted and logs whether the DM was sent.
+
+## Trap Notices
+
+Use the setup panel button `Post/Update Notices`, or run:
+
+```bash
+npm run post:notices -- --guild-id YOUR_GUILD_ID
+```
+
+Post notices for every enabled guild:
+
+```bash
+npm run post:notices -- --all
+```
+
+Notice message IDs are stored in `spam_catcher_notice_messages`. The bot edits saved notices when possible and posts a replacement if the old message cannot be edited.
+
+If posting fails from the setup panel, check logs prefixed with:
+
+```text
+[spam-catcher-setup]
+```
+
+Logs include channel ID, delivery method, existing message ID, failure stage, Discord response body when available, and final success/failure count.
+
+## CLI Config
+
+Discord setup panel is preferred. CLI exists for automation:
 
 ```bash
 npm run config:upsert -- \
@@ -74,78 +179,11 @@ npm run config:upsert -- \
   --ban-delay-minutes 10
 ```
 
-6. Start the bot:
-
-```bash
-npm start
-```
-
-## Multi-Guild Behavior
-
-The bot can be invited to multiple Discord servers. It only acts in guilds that have an enabled row in `spam_catcher_config`.
-
-- Unknown guilds default to disabled.
-- Each guild has independent trap channels, log channel, review channel, timeout settings, ban mode, and webhook notice config.
-- Optional `ALLOWED_GUILD_IDS` can restrict the bot to a comma-separated list of guild IDs.
-
-List configured guilds:
+List configs:
 
 ```bash
 npm run config:list
 ```
-
-Admins can also manage a guild directly in Discord:
-
-```text
-/spam-catcher setup
-```
-
-## Trap Notices
-
-To post or refresh the warning notice messages in all configured trap channels:
-
-```bash
-npm run post:notices -- --guild-id YOUR_GUILD_ID
-```
-
-To post notices for every enabled configured guild:
-
-```bash
-npm run post:notices -- --all
-```
-
-The script stores notice message IDs in `spam_catcher_notice_messages`; the bot uses those rows to update the caught count after each event.
-
-## Configuration
-
-The bot reads guild config from `spam_catcher_config.config_json`, keyed by `guild_id`.
-
-If a guild has no config row, Spam Catcher is disabled for that guild.
-
-Example JSON for `spam_catcher_config.config_json`:
-
-```json
-{
-  "enabled": true,
-  "channelIds": ["trap_channel_id"],
-  "logChannelId": "admin_log_channel_id",
-  "timeoutMinutes": 60,
-  "autoBanEnabled": false,
-  "banMode": "delayed",
-  "banDelayMinutes": 10,
-  "reviewChannelId": "admin_review_channel_id",
-  "webhookEnabled": false,
-  "webhookUrls": []
-}
-```
-
-`banMode` supports `delayed`, `immediate`, and `after_timeout`.
-
-## Database
-
-Tables are auto-created at runtime. You can also run the SQL in `scripts/schema-postgres.sql` manually in Postgres.
-
-For a local PostgreSQL database on your own VPS, follow `setup.md`.
 
 ## Behavior Notes
 
@@ -153,3 +191,5 @@ For a local PostgreSQL database on your own VPS, follow `setup.md`.
 - Caught messages are left in the trap channel.
 - Caught counts are event counts, not distinct-user counts.
 - Delayed bans are checked every 30 seconds while the bot is running.
+- Review cards let admins ban user or remove timeout.
+- Removing timeout cancels scheduled Spam Catcher ban for that event.

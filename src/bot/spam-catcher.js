@@ -13,6 +13,7 @@ const {
   SeparatorBuilder,
   TextDisplayBuilder,
 } = require('@discordjs/builders');
+const { parseAllowedGuildIds } = require('./env');
 
 const APPEAL_PREFIX = 'spamcatcher_appeal';
 const APPEAL_MODAL_PREFIX = 'spamcatcher_appeal_modal';
@@ -25,9 +26,15 @@ const CONFIG_CACHE_TTL_MS = 5000;
 const DISCORD_TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
 
 function createSpamCatcherManager({ client, configStore }) {
+  const allowedGuildIds = parseAllowedGuildIds();
   const configCache = new Map();
   let banInterval = null;
   let delayedBanRunning = false;
+
+  function isGuildAllowed(guildId) {
+    if (!guildId) return false;
+    return allowedGuildIds.size === 0 || allowedGuildIds.has(guildId);
+  }
 
   async function getConfig(guildId) {
     const cached = configCache.get(guildId);
@@ -469,6 +476,7 @@ function createSpamCatcherManager({ client, configStore }) {
 
   async function handleMessage(message) {
     if (!message.guild || !message.member || message.author?.bot || message.webhookId) return;
+    if (!isGuildAllowed(message.guild.id)) return;
     const config = await getConfig(message.guild.id).catch((error) => {
       console.error('Failed to load Spam Catcher config:', error);
       return null;
@@ -516,6 +524,11 @@ function createSpamCatcherManager({ client, configStore }) {
 
   async function handleAppealButton(interaction) {
     const [, eventId] = interaction.customId.split(':');
+    const event = await configStore.getSpamCatcherEventById(Number(eventId)).catch(() => null);
+    if (!event || event.userId !== interaction.user.id || !isGuildAllowed(event.guildId)) {
+      await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
     const modal = new ModalBuilder()
       .setCustomId(`${APPEAL_MODAL_PREFIX}:${eventId}`)
       .setTitle('Spam Catcher appeal')
@@ -536,8 +549,14 @@ function createSpamCatcherManager({ client, configStore }) {
     const [, eventIdRaw] = interaction.customId.split(':');
     const eventId = Number(eventIdRaw);
     const message = interaction.fields.getTextInputValue('appeal_message').trim();
+    const existingEvent = await configStore.getSpamCatcherEventById(eventId).catch(() => null);
+    if (!existingEvent || existingEvent.userId !== interaction.user.id || !isGuildAllowed(existingEvent.guildId)) {
+      await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+
     const event = await configStore.markSpamCatcherAppealed(eventId, message).catch(() => null);
-    if (!event || event.userId !== interaction.user.id) {
+    if (!event) {
       await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
@@ -591,6 +610,10 @@ function createSpamCatcherManager({ client, configStore }) {
       await interaction.reply({ content: 'Spam Catcher event not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
+    if (!isGuildAllowed(event.guildId)) {
+      await interaction.reply({ content: 'Spam Catcher is not enabled for this guild.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
 
     if (!canReviewTimeout(event)) {
       await interaction.reply({ content: 'This Spam Catcher event is no longer waiting for timeout action.', flags: MessageFlags.Ephemeral }).catch(() => null);
@@ -610,6 +633,10 @@ function createSpamCatcherManager({ client, configStore }) {
       await interaction.reply({ content: 'Spam Catcher event not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
+    if (!isGuildAllowed(event.guildId)) {
+      await interaction.reply({ content: 'Spam Catcher is not enabled for this guild.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
 
     await interaction.update(buildReviewComponents(event)).catch(async () => {
       await interaction.reply({ content: 'Failed to restore the review message.', flags: MessageFlags.Ephemeral }).catch(() => null);
@@ -622,6 +649,10 @@ function createSpamCatcherManager({ client, configStore }) {
     const event = await getInteractionEvent(interaction);
     if (!event) {
       await interaction.reply({ content: 'Spam Catcher event not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+    if (!isGuildAllowed(event.guildId)) {
+      await interaction.reply({ content: 'Spam Catcher is not enabled for this guild.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
 
@@ -664,6 +695,10 @@ function createSpamCatcherManager({ client, configStore }) {
     const event = await getInteractionEvent(interaction);
     if (!event) {
       await interaction.reply({ content: 'Spam Catcher event not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+    if (!isGuildAllowed(event.guildId)) {
+      await interaction.reply({ content: 'Spam Catcher is not enabled for this guild.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
     if (!canReviewTimeout(event)) {
@@ -714,6 +749,9 @@ function createSpamCatcherManager({ client, configStore }) {
     try {
       const events = await configStore.getDueSpamCatcherBanEvents(25).catch(() => []);
       for (const event of events) {
+        if (!isGuildAllowed(event.guildId)) continue;
+        const config = await getConfig(event.guildId).catch(() => null);
+        if (!config?.enabled) continue;
         const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
         if (!guild) continue;
         await handleImmediateBan(guild, event);

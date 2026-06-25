@@ -1,4 +1,13 @@
-const { DISCORD_TOKEN, DATABASE_URL, LOG_CHANNEL_ID, DISCORD_GUILD_ID, DEBUG } = process.env;
+const { DISCORD_TOKEN, DATABASE_URL, ALLOWED_GUILD_IDS, DEBUG } = process.env;
+
+function parseAllowedGuildIds(value = ALLOWED_GUILD_IDS) {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+}
 
 function requireRuntimeEnv() {
   const missing = [];
@@ -14,8 +23,8 @@ function requireRuntimeEnv() {
 module.exports = {
   DISCORD_TOKEN,
   DATABASE_URL,
-  LOG_CHANNEL_ID,
-  DISCORD_GUILD_ID,
+  ALLOWED_GUILD_IDS,
   DEBUG,
+  parseAllowedGuildIds,
   requireRuntimeEnv,
 };

@@ -183,32 +183,82 @@ node -e "const { Pool } = require('pg'); const p = new Pool({ connectionString: 
 Set these values in the project's `.env`:
 
 ```env
+DISCORD_TOKEN=your_discord_bot_token
 DATABASE_URL=postgresql://spamcatcher:REPLACE_WITH_DB_PASS@127.0.0.1:5432/spam_catcher
 PG_SSL_MODE=disable
 BOT_POSTGRES_POOL_MAX=2
+ALLOWED_GUILD_IDS=
+DEBUG=false
 ```
 
-Keep the rest of the Discord values from `.env.example`:
+Do not put guild-specific IDs in `.env`. These values belong in `spam_catcher_config`, one row per Discord guild:
 
-```env
-DISCORD_TOKEN=your_discord_bot_token
-DISCORD_GUILD_ID=your_discord_server_id
-LOG_CHANNEL_ID=your_admin_log_text_channel_id
-SPAM_CATCHER_ENABLED=true
-SPAM_CATCHER_CHANNEL_IDS=trap_channel_id_1,trap_channel_id_2
-SPAM_CATCHER_REVIEW_CHANNEL_ID=admin_review_text_channel_id
-```
+- Guild/server ID
+- Trap channel IDs
+- Review channel ID
+- Log channel ID
+- Timeout and ban behavior
+- Webhook notice settings
 
 Then run:
 
 ```bash
 npm run check
+```
+
+## 8. Add A Guild Config
+
+Preferred path: start the bot, then run this command inside the Discord server as an Administrator:
+
+```text
+/spam-catcher setup
+```
+
+The command opens a Component V2 setup panel for selecting trap channels, review channel, log channel, moderation mode, enabling the feature, and posting trap notices.
+
+CLI setup is also available.
+
+Use the config script instead of hand-written SQL:
+
+```bash
+npm run config:upsert -- \
+  --guild-id YOUR_DISCORD_GUILD_ID \
+  --log-channel-id ADMIN_LOG_CHANNEL_ID \
+  --review-channel-id ADMIN_REVIEW_CHANNEL_ID \
+  --trap-channel-ids TRAP_CHANNEL_ID_1,TRAP_CHANNEL_ID_2 \
+  --timeout-minutes 60 \
+  --auto-ban false \
+  --ban-mode delayed \
+  --ban-delay-minutes 10
+```
+
+List configured guilds:
+
+```bash
+npm run config:list
+```
+
+Post trap-channel warning notices for that guild:
+
+```bash
+npm run post:notices -- --guild-id YOUR_DISCORD_GUILD_ID
+```
+
+Start the bot:
+
+```bash
 npm start
 ```
 
-## 8. Optional: Seed Config in Database
+Optional: restrict the bot to known guilds by setting a comma-separated allowlist:
 
-The bot can read config from `.env`, so this is optional. Use this only if you want database config to override `.env`.
+```env
+ALLOWED_GUILD_IDS=GUILD_ID_1,GUILD_ID_2
+```
+
+## 9. Optional: Seed Config With SQL
+
+Prefer `npm run config:upsert`. If you must use SQL, insert one row per guild:
 
 ```bash
 PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U spamcatcher -d spam_catcher <<'SQL'
@@ -218,6 +268,7 @@ VALUES (
   '{
     "enabled": true,
     "channelIds": ["TRAP_CHANNEL_ID"],
+    "logChannelId": "ADMIN_LOG_CHANNEL_ID",
     "timeoutMinutes": 60,
     "autoBanEnabled": false,
     "banMode": "delayed",
@@ -236,7 +287,7 @@ SQL
 
 Replace the placeholder IDs before running.
 
-## 9. Daily Backups
+## 10. Daily Backups
 
 Create a root-owned backup directory:
 
@@ -263,7 +314,7 @@ To inspect a backup without restoring:
 zcat /var/backups/spam-catcher/spam_catcher_test.sql.gz | head
 ```
 
-## 10. Final Report
+## 11. Final Report
 
 Report back with:
 
@@ -272,7 +323,8 @@ Report back with:
 - Database name created or reused
 - App user created or reused
 - Schema tables verified
-- Final `.env` database values, with the password shown only to the server owner
+- Final `.env` runtime values, with the database password shown only to the server owner
+- Guild config rows created or updated
 - Backup path and retention period
 
 Do not print the database password in shared logs or public chat.

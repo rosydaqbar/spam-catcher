@@ -1,9 +1,42 @@
 require('dotenv').config();
 
 const configStore = require('../src/config-store');
-const { DISCORD_TOKEN, DISCORD_GUILD_ID, requireRuntimeEnv } = require('../src/bot/env');
+const { DISCORD_TOKEN, requireRuntimeEnv } = require('../src/bot/env');
 
-requireRuntimeEnv();
+const USAGE = `Usage:
+  node scripts/post-notices.js --guild-id 123
+  node scripts/post-notices.js --all
+
+Options:
+  --guild-id <id>  Post notices for one configured guild.
+  --all           Post notices for every enabled configured guild.
+  --help          Show this help.
+`;
+
+function parseArgs(argv) {
+  const args = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const item = argv[index];
+    if (item === '--help' || item === '-h') return { help: true };
+    if (item === '--all') {
+      args.all = true;
+      continue;
+    }
+    if (item === '--guild-id') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) throw new Error('--guild-id requires a value.');
+      args.guildId = value.trim();
+      index += 1;
+      continue;
+    }
+    if (item.startsWith('--guild-id=')) {
+      args.guildId = item.slice('--guild-id='.length).trim();
+      continue;
+    }
+    throw new Error(`Unexpected argument: ${item}`);
+  }
+  return args;
+}
 
 function formatNoticeMinutes(minutes) {
   const safeMinutes = Math.max(1, Math.floor(Number(minutes) || 1));
@@ -121,15 +154,12 @@ async function postBotNotice(channelId, payload) {
   return message?.id ? { channelId, messageId: message.id, deliveryMethod: 'bot' } : null;
 }
 
-async function main() {
-  const guildId = DISCORD_GUILD_ID || process.env.SELECTED_GUILD_ID;
-  if (!guildId) {
-    throw new Error('DISCORD_GUILD_ID is required to post notices.');
+async function postGuildNotices(guildId, config) {
+  if (!config.enabled) {
+    throw new Error(`Spam Catcher is disabled for guild ${guildId}.`);
   }
-
-  const config = await configStore.getSpamCatcherConfig(guildId);
   if (!config.channelIds.length) {
-    throw new Error('No Spam Catcher channels configured. Set SPAM_CATCHER_CHANNEL_IDS or spam_catcher_config.');
+    throw new Error(`No Spam Catcher trap channels configured for guild ${guildId}.`);
   }
 
   const webhookByChannel = new Map(
@@ -148,7 +178,40 @@ async function main() {
   }
 
   await configStore.saveSpamCatcherNoticeMessages(guildId, notices);
-  console.log(`Saved ${notices.length} Spam Catcher notice message${notices.length === 1 ? '' : 's'}.`);
+  return notices;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log(USAGE);
+    return;
+  }
+  requireRuntimeEnv();
+  if (args.all && args.guildId) {
+    throw new Error('Use either --guild-id or --all, not both.');
+  }
+  if (!args.all && !args.guildId) {
+    throw new Error(`Missing target.\n\n${USAGE}`);
+  }
+
+  const targets = args.all
+    ? (await configStore.listSpamCatcherConfigs())
+      .filter((row) => row.config.enabled)
+      .map((row) => ({ guildId: row.guildId, config: row.config }))
+    : [{ guildId: args.guildId, config: await configStore.getSpamCatcherConfig(args.guildId) }];
+
+  if (!targets.length) {
+    console.log('No enabled Spam Catcher guild configs found.');
+    return;
+  }
+
+  for (const target of targets) {
+    const notices = await postGuildNotices(target.guildId, target.config);
+    console.log(
+      `Guild ${target.guildId}: saved ${notices.length} Spam Catcher notice message${notices.length === 1 ? '' : 's'}.`
+    );
+  }
 }
 
 main()

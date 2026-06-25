@@ -32,6 +32,7 @@ let spamCatcherNoticeMessagesEnsured = false;
 const DEFAULT_SPAM_CATCHER_CONFIG = {
   enabled: false,
   channelIds: [],
+  logChannelId: null,
   timeoutMinutes: 60,
   autoBanEnabled: false,
   banMode: 'delayed',
@@ -89,19 +90,6 @@ async function query(text, params) {
   throw new Error('Postgres query failed without an error.');
 }
 
-function parseBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
-}
-
-function parseList(value) {
-  if (!value) return [];
-  return String(value)
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function parseJson(value) {
   if (!value) return null;
   if (typeof value === 'object') return value;
@@ -110,22 +98,6 @@ function parseJson(value) {
   } catch {
     return null;
   }
-}
-
-function envSpamCatcherConfig() {
-  const webhookUrls = parseJson(process.env.SPAM_CATCHER_WEBHOOK_URLS);
-  return normalizeSpamCatcherConfig({
-    enabled: parseBoolean(process.env.SPAM_CATCHER_ENABLED, false),
-    channelIds: parseList(process.env.SPAM_CATCHER_CHANNEL_IDS),
-    timeoutMinutes: Number(process.env.SPAM_CATCHER_TIMEOUT_MINUTES || DEFAULT_SPAM_CATCHER_CONFIG.timeoutMinutes),
-    autoBanEnabled: parseBoolean(process.env.SPAM_CATCHER_AUTO_BAN_ENABLED, false),
-    banMode: process.env.SPAM_CATCHER_BAN_MODE || DEFAULT_SPAM_CATCHER_CONFIG.banMode,
-    banDelayMinutes: Number(process.env.SPAM_CATCHER_BAN_DELAY_MINUTES || DEFAULT_SPAM_CATCHER_CONFIG.banDelayMinutes),
-    reviewChannelId: process.env.SPAM_CATCHER_REVIEW_CHANNEL_ID || null,
-    webhookEnabled: parseBoolean(process.env.SPAM_CATCHER_WEBHOOK_ENABLED, false),
-    webhookUrl: process.env.SPAM_CATCHER_WEBHOOK_URL || null,
-    webhookUrls: Array.isArray(webhookUrls) ? webhookUrls : [],
-  });
 }
 
 function normalizeSpamCatcherConfig(value) {
@@ -160,6 +132,10 @@ function normalizeSpamCatcherConfig(value) {
         .map((id) => id.trim())
         .filter((id) => id.length > 0))]
       : [],
+    logChannelId:
+      typeof source.logChannelId === 'string' && source.logChannelId.trim().length > 0
+        ? source.logChannelId.trim()
+        : null,
     timeoutMinutes: Number.isFinite(timeoutMinutes)
       ? Math.max(1, Math.min(40_320, Math.floor(timeoutMinutes)))
       : DEFAULT_SPAM_CATCHER_CONFIG.timeoutMinutes,
@@ -276,9 +252,10 @@ function mapSpamCatcherEvent(row) {
   };
 }
 
-async function getGuildConfig() {
+async function getGuildConfig(guildId) {
+  const config = await getSpamCatcherConfig(guildId);
   return {
-    logChannelId: process.env.LOG_CHANNEL_ID || null,
+    logChannelId: config.logChannelId || null,
   };
 }
 
@@ -288,7 +265,7 @@ async function getSpamCatcherConfig(guildId) {
     'SELECT config_json FROM spam_catcher_config WHERE guild_id = $1',
     [guildId]
   );
-  if (!res.rows[0]) return envSpamCatcherConfig();
+  if (!res.rows[0]) return { ...DEFAULT_SPAM_CATCHER_CONFIG };
   return normalizeSpamCatcherConfig(res.rows[0].config_json);
 }
 
@@ -306,6 +283,22 @@ async function saveSpamCatcherConfig(guildId, config) {
     [guildId, JSON.stringify(normalized)]
   );
   return normalized;
+}
+
+async function listSpamCatcherConfigs() {
+  await ensureSpamCatcherConfigTable();
+  const res = await query(
+    `
+      SELECT guild_id, config_json, updated_at
+      FROM spam_catcher_config
+      ORDER BY updated_at DESC, guild_id ASC
+    `
+  );
+  return res.rows.map((row) => ({
+    guildId: row.guild_id,
+    config: normalizeSpamCatcherConfig(row.config_json),
+    updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+  }));
 }
 
 async function createSpamCatcherEvent({
@@ -505,6 +498,7 @@ module.exports = {
   getGuildConfig,
   getSpamCatcherConfig,
   saveSpamCatcherConfig,
+  listSpamCatcherConfigs,
   createSpamCatcherEvent,
   getSpamCatcherEventById,
   updateSpamCatcherEventStatus,

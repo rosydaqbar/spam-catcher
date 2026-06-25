@@ -3,6 +3,7 @@ require('dotenv').config();
 const { Client, Events, GatewayIntentBits, MessageFlags } = require('discord.js');
 const configStore = require('./config-store');
 const { createSpamCatcherManager } = require('./bot/spam-catcher');
+const { createSetupCommandManager } = require('./bot/setup-command');
 const { DISCORD_TOKEN, requireRuntimeEnv } = require('./bot/env');
 const { createLogger } = require('./lib/logger');
 
@@ -18,6 +19,10 @@ const client = new Client({
 });
 
 const spamCatcherManager = createSpamCatcherManager({
+  client,
+  configStore,
+});
+const setupCommandManager = createSetupCommandManager({
   client,
   configStore,
 });
@@ -68,11 +73,17 @@ process.on('SIGINT', () => {
 
 client.once(Events.ClientReady, () => {
   logger.info(`Logged in as ${client.user.tag}`);
+  setupCommandManager.registerCommands().catch((error) => {
+    logger.error('Failed to register setup command:', error);
+  });
   spamCatcherManager.startLoop?.();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (await setupCommandManager.handleInteraction(interaction)) {
+      return;
+    }
     await spamCatcherManager.handleInteraction(interaction);
   } catch (error) {
     console.error('Failed to handle interaction:', error);

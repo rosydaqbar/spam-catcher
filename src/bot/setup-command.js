@@ -71,14 +71,7 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function registerCommands() {
     if (!client.application) return;
-    const data = commandData();
-    const commands = await client.application.commands.fetch();
-    const existing = commands.find((command) => command.name === COMMAND_NAME);
-    if (existing) {
-      await existing.edit(data);
-      return;
-    }
-    await client.application.commands.create(data);
+    await client.application.commands.set([commandData()]);
   }
 
   function buildInfoPayload(title, body, { ephemeral = true } = {}) {

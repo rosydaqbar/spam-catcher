@@ -12,6 +12,7 @@ const {
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
 const { createTranslator } = require('./i18n');
+const { createModerationWorkflow } = require('./moderation-workflow');
 const { createLogger } = require('../lib/logger');
 
 const BAN_PREFIX = 'autospam_ban';
@@ -121,7 +122,9 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
           timeoutLine,
           `${t('automatic.status')}: **${statusText(event, t)}**`,
           `${t('automatic.eventId')}: \`${event.id}\``,
-        ].join('\n'))
+          event.appealMessage ? '' : null,
+          event.appealMessage ? `**Appeal:** ${event.appealMessage}` : null,
+        ].filter(Boolean).join('\n'))
       );
 
     if (event.status === 'danger') {
@@ -233,6 +236,36 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return configStore.updateAutomaticSpamDetectionReviewMessage(event.id, logChannel.id, message.id).catch(() => event);
   }
 
+  async function sendOrUpdateDangerMessage(event) {
+    if (!event?.reviewChannelId || !event.reviewMessageId) return null;
+    const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
+    if (!guild) return null;
+    const channel = await guild.channels.fetch(event.reviewChannelId).catch(() => null);
+    if (!channel?.isTextBased()) return null;
+    const message = await channel.messages.fetch(event.reviewMessageId).catch(() => null);
+    if (!message) return null;
+    const userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => null);
+    const config = await getConfig(event.guildId).catch(() => ({}));
+    return message.edit(buildDangerPayload(event, userState, config)).catch((error) => {
+      logger.error('Failed to update Automatic Spam Detection danger card', {
+        guildId: event.guildId,
+        eventId: event.id,
+        error: safeError(error),
+      });
+      return null;
+    });
+  }
+
+  const moderationWorkflow = createModerationWorkflow({
+    client,
+    source: 'autospam',
+    getConfig,
+    isGuildAllowed,
+    loadEvent: (eventId) => configStore.getAutomaticSpamDetectionEventById(eventId),
+    saveAppeal: (eventId, message) => configStore.markAutomaticSpamDetectionAppealed(eventId, message),
+    updateReviewMessage: sendOrUpdateDangerMessage,
+  });
+
   async function recordAlert(message, config, messageAt) {
     await configStore.recordAutomaticSpamDetectionAlert({
       guildId: message.guild.id,
@@ -277,6 +310,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       ...timeoutResult,
     }));
     userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => userState);
+
+    await moderationWorkflow.sendTimeoutDm({ userId: message.author.id, guildName: message.guild.name, eventId: event.id, config });
 
     await sendDangerMessage(message.guild, config, event, userState);
     logger.warn('Attachment spam danger recorded', {
@@ -428,9 +463,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         await editDangerMessage(interaction, updated || event);
         return;
       }
-      if (existingTimeoutUntil(member)) {
-        await member.timeout(null, `Automatic Spam Detection timeout removed by ${interaction.user.id}`);
-      }
+      await member.timeout(null, `Automatic Spam Detection timeout removed by ${interaction.user.id}`);
       await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
       updated = await configStore.updateAutomaticSpamDetectionDecision(event.id, 'timeout_removed', interaction.user.id);
     } catch (error) {
@@ -478,6 +511,9 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   }
 
   async function handleInteraction(interaction) {
+    if (await moderationWorkflow.handleInteraction(interaction)) {
+      return true;
+    }
     if (interaction.isButton() && interaction.customId.startsWith(`${REMOVE_TIMEOUT_PREFIX}:`)) {
       await handleRemoveTimeout(interaction);
       return true;

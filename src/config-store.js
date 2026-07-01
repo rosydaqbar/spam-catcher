@@ -286,6 +286,7 @@ async function ensureAutomaticSpamDetectionTables() {
         timeout_status TEXT NOT NULL DEFAULT 'pending',
         timeout_error TEXT,
         status TEXT NOT NULL DEFAULT 'danger',
+        appeal_message TEXT,
         review_channel_id TEXT,
         review_message_id TEXT,
         decided_by TEXT,
@@ -294,6 +295,9 @@ async function ensureAutomaticSpamDetectionTables() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS appeal_message TEXT'
   );
   await query(
     'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created ON automatic_spam_detection_events(guild_id, user_id, created_at DESC)'
@@ -336,6 +340,7 @@ function mapAutomaticSpamDetectionEvent(row) {
     timeoutStatus: row.timeout_status || 'pending',
     timeoutError: row.timeout_error || null,
     status: row.status || 'danger',
+    appealMessage: row.appeal_message || null,
     reviewChannelId: row.review_channel_id || null,
     reviewMessageId: row.review_message_id || null,
     decidedBy: row.decided_by || null,
@@ -761,6 +766,21 @@ async function updateAutomaticSpamDetectionDecision(id, status, decidedBy, decis
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
+async function markAutomaticSpamDetectionAppealed(id, appealMessage) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET appeal_message = $2,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, appealMessage]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
 async function close() {
   if (pool) {
     await pool.end();
@@ -793,5 +813,6 @@ module.exports = {
   updateAutomaticSpamDetectionTimeout,
   updateAutomaticSpamDetectionReviewMessage,
   updateAutomaticSpamDetectionDecision,
+  markAutomaticSpamDetectionAppealed,
   close,
 };

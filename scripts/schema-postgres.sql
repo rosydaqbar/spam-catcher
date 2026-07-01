@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   timeout_status TEXT NOT NULL DEFAULT 'pending',
   timeout_error TEXT,
   status TEXT NOT NULL DEFAULT 'danger',
+  appeal_message TEXT,
   review_channel_id TEXT,
   review_message_id TEXT,
   decided_by TEXT,

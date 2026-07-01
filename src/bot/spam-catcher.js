@@ -14,6 +14,8 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
+const { createTranslator } = require('./i18n');
+const { buildTrapNoticePayload } = require('./trap-notice-payload');
 
 const APPEAL_PREFIX = 'spamcatcher_appeal';
 const APPEAL_MODAL_PREFIX = 'spamcatcher_appeal_modal';
@@ -44,11 +46,12 @@ function createSpamCatcherManager({ client, configStore }) {
     return value;
   }
 
-  function appealButton(eventId) {
+  function appealButton(eventId, config = {}) {
+    const t = createTranslator(config.language);
     return new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`${APPEAL_PREFIX}:${eventId}`)
-        .setLabel('It was a mistake')
+        .setLabel(t('moderation.appealButton'))
         .setStyle(ButtonStyle.Secondary)
     );
   }
@@ -65,6 +68,19 @@ function createSpamCatcherManager({ client, configStore }) {
     return user.createDM().catch(() => null);
   }
 
+  function safeError(error) {
+    return String(error?.message || error || 'Unknown error').slice(0, 500);
+  }
+
+  function isUnknownMemberError(error) {
+    return error?.code === 10007 || safeError(error).toLowerCase().includes('unknown member');
+  }
+
+  function existingTimeoutUntil(member) {
+    const until = member?.communicationDisabledUntilTimestamp;
+    return Number.isFinite(until) && until > Date.now() ? new Date(until) : null;
+  }
+
   async function getLogChannel(guildId) {
     const config = await configStore.getGuildConfig(guildId).catch(() => null);
     if (!config?.logChannelId) return null;
@@ -72,80 +88,6 @@ function createSpamCatcherManager({ client, configStore }) {
     if (!guild) return null;
     const channel = await guild.channels.fetch(config.logChannelId).catch(() => null);
     return channel?.isTextBased() ? channel : null;
-  }
-
-  function formatNoticeMinutes(minutes) {
-    const safeMinutes = Math.max(1, Math.floor(Number(minutes) || 1));
-    if (safeMinutes % 1440 === 0) {
-      const days = safeMinutes / 1440;
-      return `${days} day${days === 1 ? '' : 's'}`;
-    }
-    if (safeMinutes % 60 === 0) {
-      const hours = safeMinutes / 60;
-      return `${hours} hour${hours === 1 ? '' : 's'}`;
-    }
-    return `${safeMinutes} minute${safeMinutes === 1 ? '' : 's'}`;
-  }
-
-  function buildTrapNoticePayload(caughtCount, config) {
-    const safeCount = Math.max(0, Math.floor(Number(caughtCount) || 0));
-    const timeoutText = formatNoticeMinutes(config.timeoutMinutes);
-    const banDelayText = formatNoticeMinutes(config.banDelayMinutes);
-    const actionId = config.autoBanEnabled
-      ? config.banMode === 'immediate'
-        ? 'kamu akan langsung terkena `ban`.'
-        : config.banMode === 'after_timeout'
-          ? `kamu akan terkena \`timeout\` selama ${timeoutText}, lalu terkena \`ban\` saat timeout berakhir.`
-          : `kamu akan terkena \`timeout\` selama ${timeoutText}, lalu terkena \`ban\` setelah periode appeal selama ${banDelayText}.`
-      : `kamu akan terkena \`timeout\` selama ${timeoutText}.`;
-    const appealId = config.autoBanEnabled && config.banMode === 'immediate'
-      ? 'Jika ini adalah kesalahan, silakan hubungi admin server.'
-      : 'Jika kamu terkena timeout, silakan kirim private message ke salah satu admin yang sedang online atau gunakan tombol appeal jika tersedia.';
-    const actionEn = config.autoBanEnabled
-      ? config.banMode === 'immediate'
-        ? 'you will be `banned` immediately.'
-        : config.banMode === 'after_timeout'
-          ? `you will receive a \`timeout\` for ${timeoutText}, then be \`banned\` when the timeout ends.`
-          : `you will receive a \`timeout\` for ${timeoutText}, then be \`banned\` after a ${banDelayText} appeal window.`
-      : `you will receive a \`timeout\` for ${timeoutText}.`;
-    const appealEn = config.autoBanEnabled && config.banMode === 'immediate'
-      ? 'If this was a mistake, please contact a server admin.'
-      : 'If you are timed out, please send a private message to one of the online admins or use the appeal button if available.';
-
-    return {
-      flags: MessageFlags.IsComponentsV2,
-      components: [
-        new ContainerBuilder()
-          .addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-              [
-                '# 🚫 Dilarang Mengirim Pesan di Channel Ini',
-                `⚠️ Channel ini dibuat untuk menangkap spammer. Jika kamu mengirim pesan di channel ini, ${actionId} ${appealId}`,
-                '',
-                '## 😈 Jangan Berani-Berani Mencoba',
-                'Kalau cuma mau tes, sistem tetap akan menangkap kamu.',
-                '',
-                `-# Jumlah user yang sudah tertangkap di channel ini: \`${safeCount}\``,
-              ].join('\n')
-            )
-          )
-          .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-          .addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(
-              [
-                '# 🚫 Do Not Send Messages in This Channel',
-                `⚠️ This channel is made to catch spammers. If you send a message in this channel, ${actionEn} ${appealEn}`,
-                '',
-                "## 😈 Don't Even Think About Trying",
-                'Even if you are just testing, the system will still catch you.',
-                '',
-                `-# Caught users in this channel: \`${safeCount}\``,
-              ].join('\n')
-            )
-          ),
-      ],
-      allowedMentions: { parse: [] },
-    };
   }
 
   function webhookEditUrl(webhookUrl, messageId) {
@@ -389,6 +331,8 @@ function createSpamCatcherManager({ client, configStore }) {
   }
 
   async function handleImmediateBan(guild, event, options = {}) {
+    const config = await getConfig(event.guildId).catch(() => ({}));
+    const t = createTranslator(config.language);
     const mode = event.action === 'ban_after_timeout'
       ? 'after_timeout'
       : event.action === 'ban_delayed'
@@ -396,7 +340,7 @@ function createSpamCatcherManager({ client, configStore }) {
         : 'immediate';
     const dmChannel = await createDmChannel(event.userId);
     const dmPayload = {
-      content: 'You are being banned by Spam Catcher. If this was a mistake, please contact a server admin.',
+      content: t('moderation.banDm'),
     };
     const dmSent = dmChannel
       ? await dmChannel.send(dmPayload).then(() => true).catch(() => false)
@@ -438,6 +382,26 @@ function createSpamCatcherManager({ client, configStore }) {
   }
 
   async function handleTimeout(guild, member, config, event) {
+    const t = createTranslator(config.language);
+    const alreadyTimedOutUntil = existingTimeoutUntil(member);
+    if (alreadyTimedOutUntil) {
+      await dmUser(member.id, {
+        content: t('moderation.alreadyTimedOutDm', { guild: guild.name }),
+        components: [appealButton(event.id, config)],
+      });
+
+      await logAction(event, 'Spam Catcher User Already Timed Out', [
+        `- Existing timeout until: <t:${Math.floor(alreadyTimedOutUntil.getTime() / 1000)}:R>`,
+        event.banAfter
+          ? event.action === 'ban_after_timeout'
+            ? `- Ban after timeout ends: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
+            : `- Ban after appeal window: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
+          : '- Scheduled ban: `off`',
+      ]);
+      await sendOrUpdateReviewMessage(guild, event).catch(() => null);
+      return;
+    }
+
     const timeoutMs = Math.min(config.timeoutMinutes * 60 * 1000, DISCORD_TIMEOUT_MAX_MS);
     let timeoutError = null;
     await member.timeout(timeoutMs, `Spam Catcher event ${event.id}`).catch((error) => {
@@ -445,22 +409,22 @@ function createSpamCatcherManager({ client, configStore }) {
     });
 
     if (timeoutError) {
-      console.error('Failed Spam Catcher timeout:', timeoutError);
+      const userUnavailable = isUnknownMemberError(timeoutError);
+      console.error(userUnavailable ? 'Spam Catcher user is no longer in guild:' : 'Failed Spam Catcher timeout:', timeoutError);
       const updated = await configStore.updateSpamCatcherEventStatus(event.id, 'timeout_failed').catch(() => ({
         ...event,
         status: 'timeout_failed',
       }));
-      await logAction(updated || event, 'Spam Catcher Timeout Failed', [`- Reason: \`${timeoutError.message || timeoutError}\``]);
+      await logAction(updated || event, userUnavailable ? 'Spam Catcher User Unavailable' : 'Spam Catcher Timeout Failed', [
+        `- Reason: \`${safeError(timeoutError)}\``,
+      ]);
       await sendOrUpdateReviewMessage(guild, updated || event).catch(() => null);
       return;
     }
 
     await dmUser(member.id, {
-      content: [
-        `You have been timed out in ${guild.name} because you posted in a spam catcher channel.`,
-        'If this was a mistake, click the button below and explain what happened.',
-      ].join('\n'),
-      components: [appealButton(event.id)],
+      content: t('moderation.timeoutDm', { guild: guild.name }),
+      components: [appealButton(event.id, config)],
     });
 
     await logAction(event, 'Spam Catcher Timed Out User', [
@@ -475,11 +439,10 @@ function createSpamCatcherManager({ client, configStore }) {
   }
 
   async function notifyTimeoutRemoved(guild, event) {
+    const config = await getConfig(event.guildId).catch(() => ({}));
+    const t = createTranslator(config.language);
     return dmUser(event.userId, {
-      content: [
-        `Your timeout in ${guild.name} has been lifted by the admins.`,
-        'You can send messages again.',
-      ].join('\n'),
+      content: t('moderation.timeoutRemovedDm', { guild: guild.name }),
     });
   }
 
@@ -534,18 +497,20 @@ function createSpamCatcherManager({ client, configStore }) {
   async function handleAppealButton(interaction) {
     const [, eventId] = interaction.customId.split(':');
     const event = await configStore.getSpamCatcherEventById(Number(eventId)).catch(() => null);
+    const config = event ? await getConfig(event.guildId).catch(() => ({})) : {};
+    const t = createTranslator(config.language);
     if (!event || event.userId !== interaction.user.id || !isGuildAllowed(event.guildId)) {
-      await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      await interaction.reply({ content: t('moderation.appealNotFound'), flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
     const modal = new ModalBuilder()
       .setCustomId(`${APPEAL_MODAL_PREFIX}:${eventId}`)
-      .setTitle('Spam Catcher appeal')
+      .setTitle(t('moderation.appealModalTitle'))
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
             .setCustomId('appeal_message')
-            .setLabel('Why was this a mistake?')
+            .setLabel(t('moderation.appealModalQuestion'))
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
             .setMaxLength(1000)
@@ -559,14 +524,16 @@ function createSpamCatcherManager({ client, configStore }) {
     const eventId = Number(eventIdRaw);
     const message = interaction.fields.getTextInputValue('appeal_message').trim();
     const existingEvent = await configStore.getSpamCatcherEventById(eventId).catch(() => null);
+    const config = existingEvent ? await getConfig(existingEvent.guildId).catch(() => ({})) : {};
+    const t = createTranslator(config.language);
     if (!existingEvent || existingEvent.userId !== interaction.user.id || !isGuildAllowed(existingEvent.guildId)) {
-      await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      await interaction.reply({ content: t('moderation.appealNotFound'), flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
 
     const event = await configStore.markSpamCatcherAppealed(eventId, message).catch(() => null);
     if (!event) {
-      await interaction.reply({ content: 'Appeal not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      await interaction.reply({ content: t('moderation.appealNotFound'), flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
 
@@ -576,7 +543,7 @@ function createSpamCatcherManager({ client, configStore }) {
       : null;
     if (!reviewChannel?.isTextBased()) {
       await interaction.reply({
-        content: 'Your appeal was saved, but the review channel is not available. Please contact an admin.',
+        content: t('moderation.appealSavedNoReview'),
         flags: MessageFlags.Ephemeral,
       }).catch(() => null);
       return;
@@ -585,12 +552,12 @@ function createSpamCatcherManager({ client, configStore }) {
     const sent = await sendOrUpdateReviewMessage(guild, event).catch(() => null);
     if (!sent) {
       await interaction.reply({
-        content: 'Your appeal was saved, but the review message could not be sent. Please contact an admin.',
+        content: t('moderation.appealSavedNoMessage'),
         flags: MessageFlags.Ephemeral,
       }).catch(() => null);
       return;
     }
-    await interaction.reply({ content: 'Your appeal was sent to the admins.', flags: MessageFlags.Ephemeral }).catch(() => null);
+    await interaction.reply({ content: t('moderation.appealSent'), flags: MessageFlags.Ephemeral }).catch(() => null);
   }
 
   async function requireAdmin(interaction, action) {
@@ -675,6 +642,31 @@ function createSpamCatcherManager({ client, configStore }) {
     const member = interaction.guild
       ? await interaction.guild.members.fetch(event.userId).catch(() => null)
       : null;
+    if (!member) {
+      const updated = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => event);
+      await interaction.update(buildResolvedReviewComponents(updated || event)).catch(async () => {
+        await interaction.reply({ content: 'User is no longer in this guild; the scheduled ban was cancelled.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      });
+      await logAction(updated || event, 'Spam Catcher Timeout Removal Skipped', [
+        `- Removed by: <@${interaction.user.id}>`,
+        '- Reason: `user is no longer in this guild`',
+      ]);
+      return;
+    }
+
+    if (!existingTimeoutUntil(member)) {
+      const updated = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => event);
+      const dmSent = await notifyTimeoutRemoved(interaction.guild, updated || event).catch(() => false);
+      await interaction.update(buildResolvedReviewComponents(updated || event)).catch(async () => {
+        await interaction.reply({ content: 'No active timeout was found, but the Spam Catcher event was resolved.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      });
+      await logAction(updated || event, 'Spam Catcher Timeout Already Cleared', [
+        `- Removed by: <@${interaction.user.id}>`,
+        `- DM sent: \`${dmSent ? 'yes' : 'no'}\``,
+      ]);
+      return;
+    }
+
     let timeoutError = null;
     if (member) {
       await member.timeout(null, `Spam Catcher appeal accepted by ${interaction.user.id}`).catch((error) => {

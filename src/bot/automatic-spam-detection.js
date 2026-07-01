@@ -46,6 +46,15 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return String(error?.message || error || 'Unknown error').slice(0, 500);
   }
 
+  function isUnknownMemberError(error) {
+    return error?.code === 10007 || safeError(error).toLowerCase().includes('unknown member');
+  }
+
+  function existingTimeoutUntil(member) {
+    const until = member?.communicationDisabledUntilTimestamp;
+    return Number.isFinite(until) && until > Date.now() ? new Date(until) : null;
+  }
+
   function timestamp(date, style = 'R') {
     if (!date) return null;
     return `<t:${Math.floor(new Date(date).getTime() / 1000)}:${style}>`;
@@ -74,6 +83,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   function statusText(event) {
     if (event.status === 'banned') return `Banned by <@${event.decidedBy}>.`;
     if (event.status === 'timeout_removed') return `Timeout removed by <@${event.decidedBy}>.`;
+    if (event.status === 'user_unavailable') return `User was no longer available when handled by <@${event.decidedBy}>.`;
     if (event.status === 'ban_failed') return `Ban failed: ${event.decisionError || 'unknown error'}`;
     if (event.status === 'timeout_remove_failed') return `Timeout removal failed: ${event.decisionError || 'unknown error'}`;
     return 'Waiting for admin action.';
@@ -93,6 +103,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       : `<#${event.sourceChannelId}>`;
     const timeoutLine = event.timeoutStatus === 'applied'
       ? `Timeout: **applied** until ${timestamp(event.timeoutUntil)}`
+      : event.timeoutStatus === 'already_active'
+        ? `Timeout: **already active** until ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'failed'
         ? `Timeout: **failed** (${event.timeoutError || 'unknown error'})`
         : 'Timeout: **pending**';
@@ -183,11 +195,24 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   async function timeoutUser(guild, member, event, config) {
     const timeoutMs = Math.min(config.attachmentSpamTimeoutMinutes * 60 * 1000, DISCORD_TIMEOUT_MAX_MS);
     const timeoutUntil = new Date(Date.now() + timeoutMs);
+    const alreadyTimedOutUntil = existingTimeoutUntil(member);
+    if (alreadyTimedOutUntil) {
+      logger.info('Automatic Spam Detection user already timed out', {
+        guildId: guild.id,
+        userId: member.id,
+        eventId: event.id,
+        timeoutUntil: alreadyTimedOutUntil.toISOString(),
+      });
+      return { timeoutStatus: 'already_active', timeoutUntil: alreadyTimedOutUntil, timeoutError: null };
+    }
+
     try {
       await member.timeout(timeoutMs, `Automatic Spam Detection event ${event.id}`);
       return { timeoutStatus: 'applied', timeoutUntil, timeoutError: null };
     } catch (error) {
-      logger.warn('Failed to timeout automatic spam detection user', {
+      logger.warn(isUnknownMemberError(error)
+        ? 'Automatic Spam Detection user is no longer in guild'
+        : 'Failed to timeout automatic spam detection user', {
         guildId: guild.id,
         userId: member.id,
         eventId: event.id,
@@ -398,8 +423,24 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     let updated = event;
     try {
       const guild = await client.guilds.fetch(event.guildId);
-      const member = await guild.members.fetch(event.userId);
-      await member.timeout(null, `Automatic Spam Detection timeout removed by ${interaction.user.id}`);
+      const member = await guild.members.fetch(event.userId).catch((error) => {
+        if (isUnknownMemberError(error)) return null;
+        throw error;
+      });
+      if (!member) {
+        await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
+        updated = await configStore.updateAutomaticSpamDetectionDecision(
+          event.id,
+          'user_unavailable',
+          interaction.user.id,
+          'User is no longer in this guild.'
+        );
+        await editDangerMessage(interaction, updated || event);
+        return;
+      }
+      if (existingTimeoutUntil(member)) {
+        await member.timeout(null, `Automatic Spam Detection timeout removed by ${interaction.user.id}`);
+      }
       await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
       updated = await configStore.updateAutomaticSpamDetectionDecision(event.id, 'timeout_removed', interaction.user.id);
     } catch (error) {

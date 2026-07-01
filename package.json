@@ -10,7 +10,7 @@
     "post:notices": "node scripts/post-notices.js",
     "config:upsert": "node scripts/upsert-guild-config.js",
     "config:list": "node scripts/list-guild-configs.js",
-    "check": "node --check src/index.js && node --check src/config-store.js && node --check src/bot/env.js && node --check src/bot/automatic-spam-detection.js && node --check src/bot/spam-catcher.js && node --check src/bot/setup-command.js && node --check src/lib/logger.js && node --check src/lib/pg-ssl.js && node --check scripts/post-notices.js && node --check scripts/upsert-guild-config.js && node --check scripts/list-guild-configs.js"
+    "check": "node --check src/index.js && node --check src/config-store.js && node --check src/bot/env.js && node --check src/bot/i18n.js && node --check src/bot/automatic-spam-detection.js && node --check src/bot/spam-catcher.js && node --check src/bot/setup-command.js && node --check src/bot/trap-notice-payload.js && node --check src/lib/logger.js && node --check src/lib/pg-ssl.js && node --check scripts/post-notices.js && node --check scripts/upsert-guild-config.js && node --check scripts/list-guild-configs.js"
   },
   "engines": {
     "node": ">=18.0.0"

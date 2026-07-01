@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const configStore = require('../src/config-store');
 const { DISCORD_TOKEN, requireRuntimeEnv } = require('../src/bot/env');
+const { buildTrapNoticeRestPayload } = require('../src/bot/trap-notice-payload');
 
 const USAGE = `Usage:
   node scripts/post-notices.js --guild-id 123
@@ -36,82 +37,6 @@ function parseArgs(argv) {
     throw new Error(`Unexpected argument: ${item}`);
   }
   return args;
-}
-
-function formatNoticeMinutes(minutes) {
-  const safeMinutes = Math.max(1, Math.floor(Number(minutes) || 1));
-  if (safeMinutes % 1440 === 0) {
-    const days = safeMinutes / 1440;
-    return `${days} day${days === 1 ? '' : 's'}`;
-  }
-  if (safeMinutes % 60 === 0) {
-    const hours = safeMinutes / 60;
-    return `${hours} hour${hours === 1 ? '' : 's'}`;
-  }
-  return `${safeMinutes} minute${safeMinutes === 1 ? '' : 's'}`;
-}
-
-function buildSpamCatcherNoticePayload(caughtCount, config) {
-  const safeCount = Math.max(0, Math.floor(Number(caughtCount) || 0));
-  const timeoutText = formatNoticeMinutes(config.timeoutMinutes);
-  const banDelayText = formatNoticeMinutes(config.banDelayMinutes);
-  const actionId = config.autoBanEnabled
-    ? config.banMode === 'immediate'
-      ? 'kamu akan langsung terkena `ban`.'
-      : config.banMode === 'after_timeout'
-        ? `kamu akan terkena \`timeout\` selama ${timeoutText}, lalu terkena \`ban\` saat timeout berakhir.`
-        : `kamu akan terkena \`timeout\` selama ${timeoutText}, lalu terkena \`ban\` setelah periode appeal selama ${banDelayText}.`
-    : `kamu akan terkena \`timeout\` selama ${timeoutText}.`;
-  const appealId = config.autoBanEnabled && config.banMode === 'immediate'
-    ? 'Jika ini adalah kesalahan, silakan hubungi admin server.'
-    : 'Jika kamu terkena timeout, silakan kirim private message ke salah satu admin yang sedang online atau gunakan tombol appeal jika tersedia.';
-  const actionEn = config.autoBanEnabled
-    ? config.banMode === 'immediate'
-      ? 'you will be `banned` immediately.'
-      : config.banMode === 'after_timeout'
-        ? `you will receive a \`timeout\` for ${timeoutText}, then be \`banned\` when the timeout ends.`
-        : `you will receive a \`timeout\` for ${timeoutText}, then be \`banned\` after a ${banDelayText} appeal window.`
-    : `you will receive a \`timeout\` for ${timeoutText}.`;
-  const appealEn = config.autoBanEnabled && config.banMode === 'immediate'
-    ? 'If this was a mistake, please contact a server admin.'
-    : 'If you are timed out, please send a private message to one of the online admins or use the appeal button if available.';
-
-  return {
-    flags: 32768,
-    components: [
-      {
-        type: 17,
-        components: [
-          {
-            type: 10,
-            content: [
-              '# 🚫 Dilarang Mengirim Pesan di Channel Ini',
-              `⚠️ Channel ini dibuat untuk menangkap spammer. Jika kamu mengirim pesan di channel ini, ${actionId} ${appealId}`,
-              '',
-              '## 😈 Jangan Berani-Berani Mencoba',
-              'Kalau cuma mau tes, sistem tetap akan menangkap kamu.',
-              '',
-              `-# Jumlah user yang sudah tertangkap di channel ini: \`${safeCount}\``,
-            ].join('\n'),
-          },
-          { type: 14, divider: true, spacing: 1 },
-          {
-            type: 10,
-            content: [
-              '# 🚫 Do Not Send Messages in This Channel',
-              `⚠️ This channel is made to catch spammers. If you send a message in this channel, ${actionEn} ${appealEn}`,
-              '',
-              "## 😈 Don't Even Think About Trying",
-              'Even if you are just testing, the system will still catch you.',
-              '',
-              `-# Caught users in this channel: \`${safeCount}\``,
-            ].join('\n'),
-          },
-        ],
-      },
-    ],
-    allowed_mentions: { parse: [] },
-  };
 }
 
 function withWebhookComponentsEnabled(webhookUrl, waitForMessage = false) {
@@ -169,7 +94,7 @@ async function postGuildNotices(guildId, config) {
 
   for (const channelId of config.channelIds) {
     const count = await configStore.getSpamCatcherCaughtCount(guildId, channelId).catch(() => 0);
-    const payload = buildSpamCatcherNoticePayload(count, config);
+    const payload = buildTrapNoticeRestPayload(count, config);
     const webhookUrl = webhookByChannel.get(channelId);
     const notice = webhookUrl
       ? await postWebhookNotice(channelId, webhookUrl, payload)

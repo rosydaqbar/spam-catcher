@@ -24,6 +24,7 @@ Options:
   --auto-ban <true|false>     Defaults to false.
   --ban-mode <mode>           delayed, immediate, or after_timeout. Defaults to delayed.
   --ban-delay-minutes <num>   Defaults to 10.
+  --language <en|id>          Defaults to en.
   --webhook-enabled <bool>    Defaults to false.
   --webhook-urls <json>       JSON array: [{"channelId":"...","webhookUrl":"..."}].
   --help                      Show this help.
@@ -122,6 +123,7 @@ async function main() {
     autoBanEnabled: parseBoolean(args.autoBan, false),
     banMode: args.banMode || 'delayed',
     banDelayMinutes: parseNumber(args.banDelayMinutes, 10),
+    language: args.language,
     webhookEnabled: parseBoolean(args.webhookEnabled, false),
     webhookUrls: parseWebhookUrls(args.webhookUrls),
   });
@@ -138,6 +140,7 @@ async function main() {
     autoBanEnabled: saved.autoBanEnabled,
     banMode: saved.banMode,
     banDelayMinutes: saved.banDelayMinutes,
+    language: saved.language,
     webhookEnabled: saved.webhookEnabled,
     webhookCount: saved.webhookUrls.length,
   }, null, 2));

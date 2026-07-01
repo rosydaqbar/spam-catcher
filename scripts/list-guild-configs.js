@@ -24,6 +24,7 @@ function summarize(row) {
     reviewChannelId: row.config.reviewChannelId,
     banMode: row.config.banMode,
     automaticSpamDetectionEnabled: row.config.automaticSpamDetectionEnabled,
+    language: row.config.language,
     webhookEnabled: row.config.webhookEnabled,
     webhookCount: row.config.webhookUrls.length,
     updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,

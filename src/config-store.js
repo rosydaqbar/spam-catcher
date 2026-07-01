@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const { buildPgSslConfig, sanitizePgConnectionString } = require('./lib/pg-ssl');
+const { DEFAULT_LANGUAGE, normalizeLanguage } = require('./bot/i18n');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const POSTGRES_POOL_MAX = Number.parseInt(
@@ -46,6 +47,7 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   attachmentSpamThreshold: 2,
   attachmentSpamWindowSeconds: 600,
   attachmentSpamTimeoutMinutes: 40_320,
+  language: DEFAULT_LANGUAGE,
 };
 
 function isTransientPostgresError(error) {
@@ -177,6 +179,7 @@ function normalizeSpamCatcherConfig(value) {
     attachmentSpamTimeoutMinutes: Number.isFinite(attachmentSpamTimeoutMinutes)
       ? Math.max(1, Math.min(40_320, Math.floor(attachmentSpamTimeoutMinutes)))
       : DEFAULT_SPAM_CATCHER_CONFIG.attachmentSpamTimeoutMinutes,
+    language: normalizeLanguage(source.language),
   };
 }
 

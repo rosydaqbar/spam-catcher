@@ -11,6 +11,7 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
+const { createTranslator } = require('./i18n');
 const { createLogger } = require('../lib/logger');
 
 const BAN_PREFIX = 'autospam_ban';
@@ -60,33 +61,20 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return `<t:${Math.floor(new Date(date).getTime() / 1000)}:${style}>`;
   }
 
-  function formatMinutes(minutes) {
-    const safeMinutes = Math.max(1, Math.floor(Number(minutes) || 1));
-    if (safeMinutes % 1440 === 0) {
-      const days = safeMinutes / 1440;
-      return `${days} day${days === 1 ? '' : 's'}`;
-    }
-    if (safeMinutes % 60 === 0) {
-      const hours = safeMinutes / 60;
-      return `${hours} hour${hours === 1 ? '' : 's'}`;
-    }
-    return `${safeMinutes} minute${safeMinutes === 1 ? '' : 's'}`;
-  }
-
-  function reasonText(reason) {
+  function reasonText(reason, t) {
     if (reason === 'same_author_2plus_attachments_in_2plus_channels') {
-      return 'Same user sent 2 or more attachments in multiple channels within the active 10-minute window.';
+      return t('automatic.reasonCrossChannel');
     }
-    return 'Same user sent 2 or more attachments more than once within the active 10-minute window.';
+    return t('automatic.reasonRepeated');
   }
 
-  function statusText(event) {
-    if (event.status === 'banned') return `Banned by <@${event.decidedBy}>.`;
-    if (event.status === 'timeout_removed') return `Timeout removed by <@${event.decidedBy}>.`;
-    if (event.status === 'user_unavailable') return `User was no longer available when handled by <@${event.decidedBy}>.`;
-    if (event.status === 'ban_failed') return `Ban failed: ${event.decisionError || 'unknown error'}`;
-    if (event.status === 'timeout_remove_failed') return `Timeout removal failed: ${event.decisionError || 'unknown error'}`;
-    return 'Waiting for admin action.';
+  function statusText(event, t) {
+    if (event.status === 'banned') return t('automatic.statusBanned', { userId: event.decidedBy });
+    if (event.status === 'timeout_removed') return t('automatic.statusTimeoutRemoved', { userId: event.decidedBy });
+    if (event.status === 'user_unavailable') return t('automatic.statusUserUnavailable', { userId: event.decidedBy });
+    if (event.status === 'ban_failed') return t('automatic.statusBanFailed', { error: event.decisionError || 'unknown error' });
+    if (event.status === 'timeout_remove_failed') return t('automatic.statusTimeoutRemoveFailed', { error: event.decisionError || 'unknown error' });
+    return t('automatic.statusWaiting');
   }
 
   function eventAccentColor(event) {
@@ -96,42 +84,43 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return 0x22c55e;
   }
 
-  function buildDangerPayload(event, userState) {
+  function buildDangerPayload(event, userState, config = {}) {
+    const t = createTranslator(config.language);
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
     const channelList = event.channels.length > 0
       ? event.channels.map((channelId) => `<#${channelId}>`).join(', ')
       : `<#${event.sourceChannelId}>`;
     const timeoutLine = event.timeoutStatus === 'applied'
-      ? `Timeout: **applied** until ${timestamp(event.timeoutUntil)}`
+      ? `${t('automatic.timeout')}: **${t('automatic.timeoutApplied')}** ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'already_active'
-        ? `Timeout: **already active** until ${timestamp(event.timeoutUntil)}`
+        ? `${t('automatic.timeout')}: **${t('automatic.timeoutAlreadyActive')}** ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'failed'
-        ? `Timeout: **failed** (${event.timeoutError || 'unknown error'})`
-        : 'Timeout: **pending**';
+        ? `${t('automatic.timeout')}: **${t('automatic.timeoutFailed')}** (${event.timeoutError || 'unknown error'})`
+        : `${t('automatic.timeout')}: **${t('automatic.timeoutPending')}**`;
 
     const container = new ContainerBuilder()
       .setAccentColor(eventAccentColor(event))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
-          '# Danger: Attachment Spam',
-          `User: <@${event.userId}> (\`${event.userId}\`)`,
-          `Reason: **${reasonText(event.reason)}**`,
+          `# ${t('automatic.dangerTitle')}`,
+          `${t('automatic.user')}: <@${event.userId}> (\`${event.userId}\`)`,
+          `${t('automatic.reason')}: **${reasonText(event.reason, t)}**`,
           '',
-          `Source channel: <#${event.sourceChannelId}>`,
-          `Trigger message: ${messageUrl}`,
-          `Attachments on trigger message: \`${event.attachmentCount}\``,
-          `Channels in window: ${channelList}`,
-          `Window: ${timestamp(event.windowStartedAt, 'T')} - ${timestamp(event.windowExpiresAt, 'T')}`,
+          `${t('automatic.sourceChannel')}: <#${event.sourceChannelId}>`,
+          `${t('automatic.triggerMessage')}: ${messageUrl}`,
+          `${t('automatic.attachmentsOnTrigger')}: \`${event.attachmentCount}\``,
+          `${t('automatic.channelsInWindow')}: ${channelList}`,
+          `${t('automatic.window')}: ${timestamp(event.windowStartedAt, 'T')} - ${timestamp(event.windowExpiresAt, 'T')}`,
         ].join('\n'))
       )
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
-          `Spammer state: \`${userState?.spammer ? '1' : '0'}\``,
-          `Spammer count: \`${userState?.spammerCount || 0}\``,
+          `${t('automatic.spammerState')}: \`${userState?.spammer ? '1' : '0'}\``,
+          `${t('automatic.spammerCount')}: \`${userState?.spammerCount || 0}\``,
           timeoutLine,
-          `Status: **${statusText(event)}**`,
-          `Event ID: \`${event.id}\``,
+          `${t('automatic.status')}: **${statusText(event, t)}**`,
+          `${t('automatic.eventId')}: \`${event.id}\``,
         ].join('\n'))
       );
 
@@ -142,11 +131,11 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
           new ActionRowBuilder().addComponents(
             new ButtonBuilder()
               .setCustomId(`${REMOVE_TIMEOUT_PREFIX}:${event.id}`)
-              .setLabel('Remove Timeout')
+              .setLabel(t('automatic.removeTimeout'))
               .setStyle(ButtonStyle.Success),
             new ButtonBuilder()
               .setCustomId(`${BAN_PREFIX}:${event.id}`)
-              .setLabel('Ban User')
+              .setLabel(t('automatic.banUser'))
               .setStyle(ButtonStyle.Danger)
           )
         );
@@ -232,7 +221,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       return null;
     }
 
-    const message = await logChannel.send(buildDangerPayload(event, userState)).catch((error) => {
+    const message = await logChannel.send(buildDangerPayload(event, userState, config)).catch((error) => {
       logger.error('Failed to send Automatic Spam Detection danger card', {
         guildId: guild.id,
         eventId: event.id,
@@ -398,7 +387,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
 
   async function editDangerMessage(interaction, event) {
     const userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => null);
-    await interaction.editReply(buildDangerPayload(event, userState)).catch((error) => {
+    const config = await getConfig(event.guildId).catch(() => ({}));
+    await interaction.editReply(buildDangerPayload(event, userState, config)).catch((error) => {
       logger.error('Failed to edit Automatic Spam Detection danger card', {
         guildId: event.guildId,
         eventId: event.id,

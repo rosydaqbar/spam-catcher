@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const { Client, Events, GatewayIntentBits, MessageFlags } = require('discord.js');
 const configStore = require('./config-store');
+const { createAutomaticSpamDetectionManager } = require('./bot/automatic-spam-detection');
 const { createSpamCatcherManager } = require('./bot/spam-catcher');
 const { createSetupCommandManager } = require('./bot/setup-command');
 const { DISCORD_TOKEN, requireRuntimeEnv } = require('./bot/env');
@@ -15,6 +16,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -23,6 +25,10 @@ const spamCatcherManager = createSpamCatcherManager({
   configStore,
 });
 const setupCommandManager = createSetupCommandManager({
+  client,
+  configStore,
+});
+const automaticSpamDetectionManager = createAutomaticSpamDetectionManager({
   client,
   configStore,
 });
@@ -84,6 +90,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (await setupCommandManager.handleInteraction(interaction)) {
       return;
     }
+    if (await automaticSpamDetectionManager.handleInteraction(interaction)) {
+      return;
+    }
     await spamCatcherManager.handleInteraction(interaction);
   } catch (error) {
     console.error('Failed to handle interaction:', error);
@@ -104,6 +113,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
+  try {
+    await automaticSpamDetectionManager.handleMessage(message);
+  } catch (error) {
+    console.error('Failed to handle Automatic Spam Detection message:', error);
+  }
+
   try {
     await spamCatcherManager.handleMessage(message);
   } catch (error) {

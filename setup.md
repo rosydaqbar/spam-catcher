@@ -160,6 +160,8 @@ Expected tables:
 - `spam_catcher_config`
 - `spam_catcher_events`
 - `spam_catcher_notice_messages`
+- `automatic_spam_detection_users`
+- `automatic_spam_detection_events`
 
 ## 6. Confirm App Connection
 
@@ -199,6 +201,7 @@ Do not put guild-specific IDs in `.env`. These values belong in `spam_catcher_co
 - Log channel ID
 - Timeout and ban behavior
 - Webhook notice settings
+- Automatic Spam Detection enabled state
 
 Then run:
 
@@ -214,7 +217,9 @@ Preferred path: start the bot, then run this command inside the Discord server a
 /spam-catcher setup
 ```
 
-The command opens a Component V2 setup panel for selecting trap channels, review channel, log channel, moderation mode, enabling the feature, and posting trap notices.
+The command opens a Component V2 setup dashboard. Use its buttons to open focused panels for trap channels, review channel, log channel, moderation mode, Automatic Spam Detection, and trap notices.
+
+Enable `Message Content Intent` in the Discord Developer Portal before using Automatic Spam Detection. Discord must send attachment data to the bot.
 
 CLI setup is also available.
 

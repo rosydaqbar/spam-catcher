@@ -1,6 +1,6 @@
 # Spam Catcher
 
-Standalone Discord bot for trap channels. If a non-admin user posts in a configured trap channel, the bot records the event and applies the configured action: timeout only, immediate ban, ban after timeout, or ban after an appeal window.
+Standalone Discord bot for trap channels and attachment-spam detection. Trap channels apply the configured action. Automatic Spam Detection can also watch all guild messages for repeated attachment bursts and timeout suspected spammers.
 
 Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by default.
 
@@ -11,6 +11,7 @@ Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by def
 - Discord application with bot user
 - Bot invited with `bot` and `applications.commands` scopes
 - Bot permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`
+- Discord Developer Portal `Message Content Intent` enabled
 
 `Moderate Members` is needed for timeout and timeout removal. `Ban Members` is needed only when Auto Ban is enabled.
 
@@ -28,10 +29,11 @@ npm run check
 2. Create bot user and copy bot token into `.env` as `DISCORD_TOKEN`.
 3. Enable the bot in the app installation settings.
 4. Invite the bot with scopes `bot` and `applications.commands`.
-5. Grant these permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`.
-6. Start the bot once so it registers `/spam-catcher setup`.
+5. Enable `Message Content Intent` under Bot privileged gateway intents.
+6. Grant these permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`.
+7. Start the bot once so it registers `/spam-catcher setup`.
 
-The bot uses `Guilds` and `GuildMessages` gateway intents. It does not need Message Content intent because it only checks channel, author, member, and guild metadata.
+The bot uses `Guilds`, `GuildMessages`, and `MessageContent` gateway intents. `MessageContent` is needed so Discord includes attachment data for Automatic Spam Detection.
 
 ## Database
 
@@ -42,6 +44,8 @@ Required tables:
 - `spam_catcher_config`
 - `spam_catcher_events`
 - `spam_catcher_notice_messages`
+- `automatic_spam_detection_users`
+- `automatic_spam_detection_events`
 
 For VPS/local PostgreSQL setup, read `setup.md`.
 
@@ -83,6 +87,7 @@ On startup the bot:
 - registers `/spam-catcher setup`
 - starts the delayed-ban loop
 - creates missing PostgreSQL tables when needed
+- watches messages for Automatic Spam Detection when enabled per guild
 
 For production, run it under a process manager such as `systemd`, `pm2`, or Docker.
 
@@ -94,16 +99,19 @@ Run inside the Discord server as an Administrator:
 /spam-catcher setup
 ```
 
-The setup panel uses Discord Component V2 and has four containers:
+The setup dashboard uses Discord Component V2 and has five summary containers. Buttons open focused ephemeral setup panels.
 
-- `Spam Catcher Setup`: status, current result, enable/disable button, refresh button
-- `Channels`: trap channels, review channel, log channel, timeout duration
-- `Auto Ban`: Auto Ban on/off, ban timing, appeal window when needed
-- `Trap Notices`: post or update warning notices in trap channels
+- `Spam Catcher Summary`: main trap-channel enable state and current result
+- `Channels / Timeout Summary`: trap channels, review channel, log channel, timeout duration
+- `Auto Ban Summary`: Auto Ban state and ban timing
+- `Automatic Spam Detection Summary`: attachment-spam detector state and action
+- `Trap Notices Summary`: notice posting status
 
 Saved trap/review/log channels are preselected when reopening the setup panel.
 
 Settings save immediately. `Enable Spam Catcher` only controls whether trap-channel messages are handled. Enable is blocked until trap, review, and log channels are set.
+
+`Enable Automatic Detection` is independent from `Enable Spam Catcher`. It requires only the log channel because Danger cards use that channel.
 
 ## Timeout And Ban Options
 
@@ -138,6 +146,31 @@ Appeal window options:
 - `24 Hours`
 
 When an admin removes a timeout from the review card, the bot DMs the user that the timeout has been lifted and logs whether the DM was sent.
+
+## Automatic Spam Detection
+
+Default: off per guild.
+
+When enabled, the bot watches all guild messages from users it can moderate. It ignores only bots, webhooks, and users the bot cannot moderate because of role hierarchy or missing permission.
+
+Detection flow:
+
+- First message from a user with `2+` attachments starts a fixed `10 minute` window and records an Alert.
+- A later message from the same user with `2+` attachments inside that window triggers Danger.
+- Same-channel repeats and cross-channel repeats both trigger Danger.
+- After the window expires, the next qualifying message starts a new Alert window.
+
+Danger action:
+
+- sets `spammer = 1`
+- increments `spammer_count` by `1`
+- times out the user for `28 days`
+- sends a Component V2 Danger card to the configured log channel
+
+Danger card buttons:
+
+- `Remove Timeout`: admin only, removes timeout, sets `spammer = 0`, edits card resolved
+- `Ban User`: admin only, bans user, sets `spammer = 0` only if ban succeeds, edits card resolved
 
 ## Trap Notices
 

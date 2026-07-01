@@ -23,6 +23,7 @@ function summarize(row) {
     logChannelId: row.config.logChannelId,
     reviewChannelId: row.config.reviewChannelId,
     banMode: row.config.banMode,
+    automaticSpamDetectionEnabled: row.config.automaticSpamDetectionEnabled,
     webhookEnabled: row.config.webhookEnabled,
     webhookCount: row.config.webhookUrls.length,
     updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,

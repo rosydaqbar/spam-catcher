@@ -28,6 +28,7 @@ if (pool) {
 let spamCatcherConfigEnsured = false;
 let spamCatcherEventsEnsured = false;
 let spamCatcherNoticeMessagesEnsured = false;
+let automaticSpamDetectionEnsured = false;
 
 const DEFAULT_SPAM_CATCHER_CONFIG = {
   enabled: false,
@@ -41,6 +42,10 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   webhookEnabled: false,
   webhookUrl: null,
   webhookUrls: [],
+  automaticSpamDetectionEnabled: false,
+  attachmentSpamThreshold: 2,
+  attachmentSpamWindowSeconds: 600,
+  attachmentSpamTimeoutMinutes: 40_320,
 };
 
 function isTransientPostgresError(error) {
@@ -108,6 +113,9 @@ function normalizeSpamCatcherConfig(value) {
 
   const timeoutMinutes = Number(source.timeoutMinutes);
   const banDelayMinutes = Number(source.banDelayMinutes);
+  const attachmentSpamThreshold = Number(source.attachmentSpamThreshold);
+  const attachmentSpamWindowSeconds = Number(source.attachmentSpamWindowSeconds);
+  const attachmentSpamTimeoutMinutes = Number(source.attachmentSpamTimeoutMinutes);
   const webhookUrls = Array.isArray(source.webhookUrls)
     ? source.webhookUrls
       .filter((item) => item && typeof item === 'object')
@@ -159,6 +167,16 @@ function normalizeSpamCatcherConfig(value) {
         ? source.webhookUrl.trim()
         : null,
     webhookUrls,
+    automaticSpamDetectionEnabled: source.automaticSpamDetectionEnabled === true,
+    attachmentSpamThreshold: Number.isFinite(attachmentSpamThreshold)
+      ? Math.max(1, Math.min(10, Math.floor(attachmentSpamThreshold)))
+      : DEFAULT_SPAM_CATCHER_CONFIG.attachmentSpamThreshold,
+    attachmentSpamWindowSeconds: Number.isFinite(attachmentSpamWindowSeconds)
+      ? Math.max(1, Math.min(86_400, Math.floor(attachmentSpamWindowSeconds)))
+      : DEFAULT_SPAM_CATCHER_CONFIG.attachmentSpamWindowSeconds,
+    attachmentSpamTimeoutMinutes: Number.isFinite(attachmentSpamTimeoutMinutes)
+      ? Math.max(1, Math.min(40_320, Math.floor(attachmentSpamTimeoutMinutes)))
+      : DEFAULT_SPAM_CATCHER_CONFIG.attachmentSpamTimeoutMinutes,
   };
 }
 
@@ -228,6 +246,100 @@ async function ensureSpamCatcherNoticeMessagesTable() {
     'CREATE INDEX IF NOT EXISTS idx_spam_catcher_notice_messages_guild ON spam_catcher_notice_messages(guild_id)'
   );
   spamCatcherNoticeMessagesEnsured = true;
+}
+
+async function ensureAutomaticSpamDetectionTables() {
+  if (automaticSpamDetectionEnsured) return;
+  await query(
+    `
+      CREATE TABLE IF NOT EXISTS automatic_spam_detection_users (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        spammer INTEGER NOT NULL DEFAULT 0,
+        spammer_count INTEGER NOT NULL DEFAULT 0,
+        last_alert_at TIMESTAMPTZ,
+        last_danger_at TIMESTAMPTZ,
+        last_channel_id TEXT,
+        last_message_id TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (guild_id, user_id)
+      )
+    `
+  );
+  await query(
+    `
+      CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
+        id BIGSERIAL PRIMARY KEY,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        source_channel_id TEXT NOT NULL,
+        source_message_id TEXT NOT NULL,
+        attachment_count INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        channels_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        window_started_at TIMESTAMPTZ NOT NULL,
+        window_expires_at TIMESTAMPTZ NOT NULL,
+        timeout_until TIMESTAMPTZ,
+        timeout_status TEXT NOT NULL DEFAULT 'pending',
+        timeout_error TEXT,
+        status TEXT NOT NULL DEFAULT 'danger',
+        review_channel_id TEXT,
+        review_message_id TEXT,
+        decided_by TEXT,
+        decision_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `
+  );
+  await query(
+    'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created ON automatic_spam_detection_events(guild_id, user_id, created_at DESC)'
+  );
+  await query(
+    'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message ON automatic_spam_detection_events(review_channel_id, review_message_id)'
+  );
+  automaticSpamDetectionEnsured = true;
+}
+
+function mapAutomaticSpamDetectionUser(row) {
+  if (!row) return null;
+  return {
+    guildId: row.guild_id,
+    userId: row.user_id,
+    spammer: Number(row.spammer || 0),
+    spammerCount: Number(row.spammer_count || 0),
+    lastAlertAt: row.last_alert_at ? new Date(row.last_alert_at) : null,
+    lastDangerAt: row.last_danger_at ? new Date(row.last_danger_at) : null,
+    lastChannelId: row.last_channel_id || null,
+    lastMessageId: row.last_message_id || null,
+    updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+  };
+}
+
+function mapAutomaticSpamDetectionEvent(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    guildId: row.guild_id,
+    userId: row.user_id,
+    sourceChannelId: row.source_channel_id,
+    sourceMessageId: row.source_message_id,
+    attachmentCount: Number(row.attachment_count || 0),
+    reason: row.reason,
+    channels: Array.isArray(row.channels_json) ? row.channels_json : parseJson(row.channels_json) || [],
+    windowStartedAt: row.window_started_at ? new Date(row.window_started_at) : null,
+    windowExpiresAt: row.window_expires_at ? new Date(row.window_expires_at) : null,
+    timeoutUntil: row.timeout_until ? new Date(row.timeout_until) : null,
+    timeoutStatus: row.timeout_status || 'pending',
+    timeoutError: row.timeout_error || null,
+    status: row.status || 'danger',
+    reviewChannelId: row.review_channel_id || null,
+    reviewMessageId: row.review_message_id || null,
+    decidedBy: row.decided_by || null,
+    decisionError: row.decision_error || null,
+    createdAt: row.created_at ? new Date(row.created_at) : null,
+    updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+  };
 }
 
 function mapSpamCatcherEvent(row) {
@@ -486,6 +598,166 @@ async function saveSpamCatcherNoticeMessages(guildId, notices) {
   }
 }
 
+async function recordAutomaticSpamDetectionAlert({ guildId, userId, channelId, messageId, alertAt }) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      INSERT INTO automatic_spam_detection_users (
+        guild_id, user_id, spammer, spammer_count, last_alert_at,
+        last_channel_id, last_message_id, updated_at
+      )
+      VALUES ($1, $2, 0, 0, $3, $4, $5, NOW())
+      ON CONFLICT(guild_id, user_id) DO UPDATE SET
+        last_alert_at = EXCLUDED.last_alert_at,
+        last_channel_id = EXCLUDED.last_channel_id,
+        last_message_id = EXCLUDED.last_message_id,
+        updated_at = EXCLUDED.updated_at
+      RETURNING *
+    `,
+    [guildId, userId, alertAt || new Date(), channelId, messageId || null]
+  );
+  return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function markAutomaticSpamDetectionDangerUser({ guildId, userId, channelId, messageId, dangerAt }) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      INSERT INTO automatic_spam_detection_users (
+        guild_id, user_id, spammer, spammer_count, last_danger_at,
+        last_channel_id, last_message_id, updated_at
+      )
+      VALUES ($1, $2, 1, 1, $3, $4, $5, NOW())
+      ON CONFLICT(guild_id, user_id) DO UPDATE SET
+        spammer = 1,
+        spammer_count = automatic_spam_detection_users.spammer_count + 1,
+        last_danger_at = EXCLUDED.last_danger_at,
+        last_channel_id = EXCLUDED.last_channel_id,
+        last_message_id = EXCLUDED.last_message_id,
+        updated_at = EXCLUDED.updated_at
+      RETURNING *
+    `,
+    [guildId, userId, dangerAt || new Date(), channelId, messageId || null]
+  );
+  return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function resetAutomaticSpamDetectionSpammer(guildId, userId) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_users
+      SET spammer = 0, updated_at = NOW()
+      WHERE guild_id = $1 AND user_id = $2
+      RETURNING *
+    `,
+    [guildId, userId]
+  );
+  return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function getAutomaticSpamDetectionUser(guildId, userId) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    'SELECT * FROM automatic_spam_detection_users WHERE guild_id = $1 AND user_id = $2',
+    [guildId, userId]
+  );
+  return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function createAutomaticSpamDetectionEvent({
+  guildId,
+  userId,
+  sourceChannelId,
+  sourceMessageId,
+  attachmentCount,
+  reason,
+  channels,
+  windowStartedAt,
+  windowExpiresAt,
+}) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      INSERT INTO automatic_spam_detection_events (
+        guild_id, user_id, source_channel_id, source_message_id,
+        attachment_count, reason, channels_json, window_started_at,
+        window_expires_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, NOW())
+      RETURNING *
+    `,
+    [
+      guildId,
+      userId,
+      sourceChannelId,
+      sourceMessageId,
+      Number(attachmentCount) || 0,
+      reason,
+      JSON.stringify(Array.isArray(channels) ? channels : []),
+      windowStartedAt,
+      windowExpiresAt,
+    ]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function getAutomaticSpamDetectionEventById(id) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query('SELECT * FROM automatic_spam_detection_events WHERE id = $1', [id]);
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function updateAutomaticSpamDetectionTimeout(id, { timeoutUntil, timeoutStatus, timeoutError }) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET timeout_until = $2,
+          timeout_status = $3,
+          timeout_error = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, timeoutUntil || null, timeoutStatus || 'pending', timeoutError || null]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function updateAutomaticSpamDetectionReviewMessage(id, reviewChannelId, reviewMessageId) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET review_channel_id = $2,
+          review_message_id = $3,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, reviewChannelId || null, reviewMessageId || null]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function updateAutomaticSpamDetectionDecision(id, status, decidedBy, decisionError = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET status = $2,
+          decided_by = $3,
+          decision_error = $4,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, status, decidedBy || null, decisionError || null]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
 async function close() {
   if (pool) {
     await pool.end();
@@ -509,5 +781,14 @@ module.exports = {
   getSpamCatcherCaughtCount,
   getSpamCatcherNoticeMessage,
   saveSpamCatcherNoticeMessages,
+  recordAutomaticSpamDetectionAlert,
+  markAutomaticSpamDetectionDangerUser,
+  resetAutomaticSpamDetectionSpammer,
+  getAutomaticSpamDetectionUser,
+  createAutomaticSpamDetectionEvent,
+  getAutomaticSpamDetectionEventById,
+  updateAutomaticSpamDetectionTimeout,
+  updateAutomaticSpamDetectionReviewMessage,
+  updateAutomaticSpamDetectionDecision,
   close,
 };

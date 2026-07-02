@@ -158,10 +158,19 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
           `${t('automatic.spammerCount')}: \`${userState?.spammerCount || 0}\``,
           timeoutLine,
           `${t('automatic.status')}: **${statusText(event, t)}**`,
-          event.appealMessage ? '' : null,
-          event.appealMessage ? `**Appeal:** ${event.appealMessage}` : null,
         ].filter(Boolean).join('\n'))
       );
+
+    if (event.appealMessage) {
+      container
+        .addSeparatorComponents(divider())
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent([
+            `### ${t('automatic.appeal')}`,
+            event.appealMessage,
+          ].join('\n'))
+        );
+    }
 
     if (event.status === 'danger') {
       container

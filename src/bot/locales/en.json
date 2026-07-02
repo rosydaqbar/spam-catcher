@@ -118,6 +118,7 @@
     "incident": "Incident",
     "evidence": "Evidence",
     "moderationState": "Moderation state",
+    "appeal": "Appeal",
     "openMessage": "Open Message",
     "openChannel": "Open Channel",
     "user": "User",

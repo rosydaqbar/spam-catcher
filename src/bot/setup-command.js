@@ -16,6 +16,7 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { createLogger } = require('../lib/logger');
+const { parseAllowedGuildIds } = require('./env');
 const { createTranslator, languageName, normalizeLanguage } = require('./i18n');
 const { buildTrapNoticePayload } = require('./trap-notice-payload');
 
@@ -70,8 +71,28 @@ function createSetupCommandManager({ client, configStore }) {
   }
 
   async function registerCommands() {
-    if (!client.application) return;
-    await client.application.commands.set([commandData()]);
+    if (!client.application) {
+      logger.warn('Application command refresh skipped: client application is not ready.');
+      return;
+    }
+
+    const commands = [commandData()];
+    const connectedGuildIds = [...client.guilds.cache.keys()].sort();
+    const allowedGuildIds = [...parseAllowedGuildIds()].sort();
+    const meta = {
+      scope: 'global',
+      commandNames: commands.map((command) => command.name),
+      guildIds: connectedGuildIds,
+      allowedGuildIds,
+      note: 'Global refresh; Discord propagates commands to guilds.',
+    };
+
+    logger.info('Refreshing application commands on startup', meta);
+    const refreshed = await client.application.commands.set(commands);
+    logger.info('Application commands refreshed on startup', {
+      ...meta,
+      refreshedCommandIds: refreshed.map((command) => command.id),
+    });
   }
 
   function buildInfoPayload(title, body, { ephemeral = true } = {}) {

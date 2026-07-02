@@ -105,6 +105,11 @@
   },
   "automatic": {
     "dangerTitle": "Danger: Attachment Spam",
+    "incident": "Incident",
+    "evidence": "Evidence",
+    "moderationState": "Moderation state",
+    "openMessage": "Open Message",
+    "openChannel": "Open Channel",
     "user": "User",
     "reason": "Reason",
     "sourceChannel": "Source channel",
@@ -113,6 +118,8 @@
     "channelsInWindow": "Channels in window",
     "window": "Window",
     "spammerState": "Spammer state",
+    "spammerStateActive": "Flagged as spammer",
+    "spammerStateCleared": "Cleared",
     "spammerCount": "Spammer count",
     "timeout": "Timeout",
     "timeoutApplied": "applied",
@@ -131,6 +138,7 @@
     "statusTimeoutRemoved": "Timeout removed by <@{userId}>.",
     "statusUserUnavailable": "User was no longer available when handled by <@{userId}>.",
     "statusBanFailed": "Ban failed: {error}",
-    "statusTimeoutRemoveFailed": "Timeout removal failed: {error}"
+    "statusTimeoutRemoveFailed": "Timeout removal failed: {error}",
+    "adminHint": "Review evidence, then remove timeout if false positive or ban if confirmed spam."
   }
 }

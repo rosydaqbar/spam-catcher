@@ -4,10 +4,12 @@ const {
   ButtonStyle,
   MessageFlags,
   PermissionFlagsBits,
+  SeparatorSpacingSize,
 } = require('discord.js');
 const {
   ContainerBuilder,
   SeparatorBuilder,
+  SectionBuilder,
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
@@ -78,6 +80,10 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return t('automatic.statusWaiting');
   }
 
+  function spammerStateText(userState, t) {
+    return userState?.spammer ? t('automatic.spammerStateActive') : t('automatic.spammerStateCleared');
+  }
+
   function eventAccentColor(event) {
     if (event.status === 'danger') return 0xef4444;
     if (event.status === 'banned' || event.status === 'ban_failed') return 0x7f1d1d;
@@ -85,9 +91,27 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return 0x22c55e;
   }
 
+  function divider() {
+    return new SeparatorBuilder()
+      .setDivider(true)
+      .setSpacing(SeparatorSpacingSize.Small);
+  }
+
+  function sectionWithLink(content, label, url) {
+    return new SectionBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(content))
+      .setButtonAccessory(
+        new ButtonBuilder()
+          .setLabel(label)
+          .setStyle(ButtonStyle.Link)
+          .setURL(url)
+      );
+  }
+
   function buildDangerPayload(event, userState, config = {}) {
     const t = createTranslator(config.language);
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
+    const channelUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}`;
     const channelList = event.channels.length > 0
       ? event.channels.map((channelId) => `<#${channelId}>`).join(', ')
       : `<#${event.sourceChannelId}>`;
@@ -104,24 +128,36 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `# ${t('automatic.dangerTitle')}`,
-          `${t('automatic.user')}: <@${event.userId}> (\`${event.userId}\`)`,
-          `${t('automatic.reason')}: **${reasonText(event.reason, t)}**`,
-          '',
-          `${t('automatic.sourceChannel')}: <#${event.sourceChannelId}>`,
-          `${t('automatic.triggerMessage')}: ${messageUrl}`,
-          `${t('automatic.attachmentsOnTrigger')}: \`${event.attachmentCount}\``,
-          `${t('automatic.channelsInWindow')}: ${channelList}`,
-          `${t('automatic.window')}: ${timestamp(event.windowStartedAt, 'T')} - ${timestamp(event.windowExpiresAt, 'T')}`,
+          `-# ${t('automatic.eventId')}: \`${event.id}\``,
         ].join('\n'))
       )
-      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addSeparatorComponents(divider())
+      .addSectionComponents(sectionWithLink([
+        `### ${t('automatic.incident')}`,
+        `${t('automatic.user')}: <@${event.userId}> (\`${event.userId}\`)`,
+        `${t('automatic.reason')}: **${reasonText(event.reason, t)}**`,
+      ].join('\n'), t('automatic.openMessage'), messageUrl))
+      .addSeparatorComponents(divider())
+      .addSectionComponents(sectionWithLink([
+        `### ${t('automatic.evidence')}`,
+        `${t('automatic.sourceChannel')}: <#${event.sourceChannelId}>`,
+        `${t('automatic.attachmentsOnTrigger')}: \`${event.attachmentCount}\``,
+        `${t('automatic.channelsInWindow')}: ${channelList}`,
+      ].join('\n'), t('automatic.openChannel'), channelUrl))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
-          `${t('automatic.spammerState')}: \`${userState?.spammer ? '1' : '0'}\``,
+          `### ${t('automatic.window')}`,
+          `${timestamp(event.windowStartedAt, 'T')} - ${timestamp(event.windowExpiresAt, 'T')}`,
+        ].join('\n'))
+      )
+      .addSeparatorComponents(divider())
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `### ${t('automatic.moderationState')}`,
+          `${t('automatic.spammerState')}: **${spammerStateText(userState, t)}**`,
           `${t('automatic.spammerCount')}: \`${userState?.spammerCount || 0}\``,
           timeoutLine,
           `${t('automatic.status')}: **${statusText(event, t)}**`,
-          `${t('automatic.eventId')}: \`${event.id}\``,
           event.appealMessage ? '' : null,
           event.appealMessage ? `**Appeal:** ${event.appealMessage}` : null,
         ].filter(Boolean).join('\n'))
@@ -129,7 +165,10 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
 
     if (event.status === 'danger') {
       container
-        .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`-# ${t('automatic.adminHint')}`)
+        )
+        .addSeparatorComponents(divider())
         .addActionRowComponents(
           new ActionRowBuilder().addComponents(
             new ButtonBuilder()

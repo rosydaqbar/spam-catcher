@@ -105,6 +105,11 @@
   },
   "automatic": {
     "dangerTitle": "Bahaya: Spam Attachment",
+    "incident": "Insiden",
+    "evidence": "Bukti",
+    "moderationState": "Status moderasi",
+    "openMessage": "Buka Pesan",
+    "openChannel": "Buka Channel",
     "user": "User",
     "reason": "Alasan",
     "sourceChannel": "Channel sumber",
@@ -113,6 +118,8 @@
     "channelsInWindow": "Channel dalam window",
     "window": "Window",
     "spammerState": "Status spammer",
+    "spammerStateActive": "Ditandai sebagai spammer",
+    "spammerStateCleared": "Sudah bersih",
     "spammerCount": "Jumlah spammer",
     "timeout": "Timeout",
     "timeoutApplied": "diterapkan",
@@ -131,6 +138,7 @@
     "statusTimeoutRemoved": "Timeout dihapus oleh <@{userId}>.",
     "statusUserUnavailable": "User sudah tidak tersedia saat ditangani oleh <@{userId}>.",
     "statusBanFailed": "Ban gagal: {error}",
-    "statusTimeoutRemoveFailed": "Gagal menghapus timeout: {error}"
+    "statusTimeoutRemoveFailed": "Gagal menghapus timeout: {error}",
+    "adminHint": "Periksa bukti, lalu hapus timeout jika false positive atau ban jika spam terkonfirmasi."
   }
 }

@@ -2,10 +2,15 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   MessageFlags,
   ModalBuilder,
+  SectionBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
   TextInputBuilder,
   TextInputStyle,
+  TextDisplayBuilder,
 } = require('discord.js');
 const { createTranslator } = require('./i18n');
 
@@ -32,11 +37,65 @@ function createModerationWorkflow({
   function appealButton(eventId, config = {}) {
     const t = createTranslator(config.language);
     return new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(appealCustomId(eventId))
-        .setLabel(t('moderation.appealButton'))
-        .setStyle(ButtonStyle.Secondary)
+      appealButtonComponent(eventId, t)
     );
+  }
+
+  function appealButtonComponent(eventId, t) {
+    return new ButtonBuilder()
+      .setCustomId(appealCustomId(eventId))
+      .setLabel(t('moderation.appealButton'))
+      .setStyle(ButtonStyle.Secondary);
+  }
+
+  function divider() {
+    return new SeparatorBuilder()
+      .setDivider(true)
+      .setSpacing(SeparatorSpacingSize.Small);
+  }
+
+  function timeoutReasonKey(alreadyTimedOut) {
+    if (alreadyTimedOut) return 'moderation.timeoutDmReasonAlreadyActive';
+    if (source === 'autospam') return 'moderation.timeoutDmReasonAutomatic';
+    return 'moderation.timeoutDmReasonSpamCatcher';
+  }
+
+  function buildTimeoutDmPayload({ guildName, eventId, config, alreadyTimedOut }) {
+    const t = createTranslator(config.language);
+    const container = new ContainerBuilder()
+      .setAccentColor(alreadyTimedOut ? 0xf59e0b : 0xef4444)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `# ${t(alreadyTimedOut ? 'moderation.timeoutDmTitleAlreadyActive' : 'moderation.timeoutDmTitle')}`,
+          `-# ${t('moderation.timeoutDmServer', { guild: guildName })}`,
+        ].join('\n'))
+      )
+      .addSeparatorComponents(divider())
+      .addSectionComponents(
+        new SectionBuilder()
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent([
+              `### ${t('moderation.timeoutDmReasonTitle')}`,
+              t(timeoutReasonKey(alreadyTimedOut), { guild: guildName }),
+            ].join('\n'))
+          )
+          .setButtonAccessory(appealButtonComponent(eventId, t))
+      )
+      .addSeparatorComponents(divider())
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `### ${t('moderation.timeoutDmNextTitle')}`,
+          t('moderation.timeoutDmNextBody'),
+          '',
+          `-# ${t('moderation.timeoutDmFooter')}`,
+        ].join('\n'))
+      );
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [container],
+      allowedMentions: { parse: [] },
+    };
   }
 
   async function dmUser(userId, payload) {
@@ -46,11 +105,7 @@ function createModerationWorkflow({
   }
 
   async function sendTimeoutDm({ userId, guildName, eventId, config, alreadyTimedOut = false }) {
-    const t = createTranslator(config.language);
-    return dmUser(userId, {
-      content: t(alreadyTimedOut ? 'moderation.alreadyTimedOutDm' : 'moderation.timeoutDm', { guild: guildName }),
-      components: [appealButton(eventId, config)],
-    });
+    return dmUser(userId, buildTimeoutDmPayload({ guildName, eventId, config, alreadyTimedOut }));
   }
 
   async function sendBanDm(userId, config = {}) {

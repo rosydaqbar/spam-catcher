@@ -53,6 +53,7 @@ Then run inside Discord as an Administrator:
 ```
 
 Unknown guilds are disabled by default. Use `/spam-catcher setup` to save guild config in PostgreSQL.
+<img width="521" height="829" alt="image" src="https://github.com/user-attachments/assets/75e2c2e2-5310-4ac4-a16b-e8430d028fb4" />
 
 ## Discord Bot Setup Checklist
 

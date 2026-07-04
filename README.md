@@ -6,18 +6,20 @@ Trap-channel Spam Catcher and Automatic Spam Detection have separate setup toggl
 
 Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by default.
 
-## Requirements
+## Required To Run
 
 - Node.js `18+`
-- PostgreSQL `12+` recommended
+- PostgreSQL reachable through `DATABASE_URL`
 - Discord application with bot user
 - Bot invited with `bot` and `applications.commands` scopes
-- Bot permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`
+- Required bot permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`
 - Discord Developer Portal `Message Content Intent` enabled
 
-`Moderate Members` is needed for timeout and timeout removal. `Ban Members` is needed only when Auto Ban is enabled.
+`Moderate Members` is required for timeout and timeout removal. `Message Content Intent` is required so Discord includes message attachment data.
 
-## Install
+## Ready To Run
+
+Install and create `.env`:
 
 ```bash
 npm install
@@ -25,21 +27,49 @@ cp .env.example .env
 npm run check
 ```
 
-## Discord Bot Setup
+Set only the required `.env` values first:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+DATABASE_URL=postgresql://spamcatcher:password@127.0.0.1:5432/spam_catcher
+```
+
+For local/VPS PostgreSQL on `127.0.0.1`, also set:
+
+```env
+PG_SSL_MODE=disable
+```
+
+Start the bot:
+
+```bash
+npm start
+```
+
+Then run inside Discord as an Administrator:
+
+```text
+/spam-catcher setup
+```
+
+Unknown guilds are disabled by default. Use `/spam-catcher setup` to save guild config in PostgreSQL.
+
+## Discord Bot Setup Checklist
 
 1. Create app in Discord Developer Portal.
 2. Create bot user and copy bot token into `.env` as `DISCORD_TOKEN`.
 3. Enable the bot in the app installation settings.
 4. Invite the bot with scopes `bot` and `applications.commands`.
 5. Enable `Message Content Intent` under Bot privileged gateway intents.
-6. Grant these permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`.
-7. Start the bot once so it registers `/spam-catcher setup` and `/spam-catcher lang`.
+6. Grant required permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`.
+7. Optional: grant `Ban Members` if using Auto Ban or admin Ban buttons.
+8. Start the bot once so it registers `/spam-catcher setup` and `/spam-catcher lang`.
 
-The bot uses `Guilds`, `GuildMessages`, and `MessageContent` gateway intents. `MessageContent` is needed so Discord includes attachment data for Automatic Spam Detection.
+The bot uses `Guilds`, `GuildMessages`, and `MessageContent` gateway intents.
 
 ## Database
 
-Use PostgreSQL. Tables auto-create at runtime, or you can apply `scripts/schema-postgres.sql` manually.
+Tables auto-create at runtime, or you can apply `scripts/schema-postgres.sql` manually.
 
 Required tables:
 
@@ -60,30 +90,23 @@ PG_SSL_MODE=disable
 
 Do not expose PostgreSQL publicly. Keep it on `127.0.0.1` or private network.
 
-## Environment
+## Optional Environment
 
-`.env` is runtime-only:
+`.env` is runtime-only. Do not put guild IDs, channel IDs, timeout settings, or ban settings in `.env`; those live in `spam_catcher_config.config_json`.
 
 ```env
-DISCORD_TOKEN=your_discord_bot_token
-DATABASE_URL=postgresql://spamcatcher:password@127.0.0.1:5432/spam_catcher
 PG_SSL_MODE=disable
 BOT_POSTGRES_POOL_MAX=2
 ALLOWED_GUILD_IDS=
 DEBUG=false
 ```
 
-Do not put guild IDs, channel IDs, timeout settings, or ban settings in `.env`. Those are saved per guild in `spam_catcher_config.config_json`.
+- `PG_SSL_MODE`: use `disable` for local/VPS PostgreSQL on `127.0.0.1`; defaults to SSL-required behavior otherwise.
+- `BOT_POSTGRES_POOL_MAX`: defaults to `2`.
+- `ALLOWED_GUILD_IDS`: comma-separated allowlist; empty means any guild can work if it has enabled database config.
+- `DEBUG`: currently optional runtime flag.
 
-`ALLOWED_GUILD_IDS` is optional. Empty means any guild can work if it has enabled database config.
-
-## Launch
-
-```bash
-npm start
-```
-
-On startup the bot:
+On startup, the bot:
 
 - logs in to Discord
 - refreshes the global `/spam-catcher` application command with all current subcommands
@@ -101,7 +124,7 @@ Run inside the Discord server as an Administrator:
 /spam-catcher setup
 ```
 
-Set the server UI language with:
+Optional: set the server UI language with:
 
 ```text
 /spam-catcher lang language: English
@@ -112,10 +135,10 @@ The setup dashboard uses Discord Component V2 and has summary containers. Button
 
 - `Spam Catcher Summary`: main trap-channel enable state and current result
 - `Channels / Timeout Summary`: trap channels, review channel, log channel, timeout duration
-- `Auto Ban Summary`: Auto Ban state and ban timing
+- `Auto Ban Summary`: optional Auto Ban state and ban timing
 - `Automatic Spam Detection Summary`: attachment-spam detector state and action
-- `Trap Notices Summary`: notice posting status
-- Language is stored per guild and used for setup UI, trap notices, Automatic Detection Danger cards, timeout DMs, appeal modals, and shared moderation messages.
+- `Trap Notices Summary`: optional notice posting status
+- Optional language setting is stored per guild and used for setup UI, trap notices, Automatic Detection Danger cards, timeout DMs, appeal modals, and shared moderation messages.
 
 Saved trap/review/log channels are preselected when reopening the setup panel.
 

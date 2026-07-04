@@ -2,6 +2,8 @@
 
 Standalone Discord bot for trap channels and attachment-spam detection. Trap channels apply the configured action. Automatic Spam Detection can also watch all guild messages for repeated attachment bursts and timeout suspected spammers.
 
+Trap-channel Spam Catcher and Automatic Spam Detection have separate setup toggles, but share the same user moderation workflow for timeout DMs, appeal buttons/modals, timeout removal DMs, and ban DMs.
+
 Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by default.
 
 ## Requirements
@@ -31,7 +33,7 @@ npm run check
 4. Invite the bot with scopes `bot` and `applications.commands`.
 5. Enable `Message Content Intent` under Bot privileged gateway intents.
 6. Grant these permissions: `View Channels`, `Send Messages`, `Read Message History`, `Moderate Members`, `Ban Members`.
-7. Start the bot once so it registers `/spam-catcher setup`.
+7. Start the bot once so it registers `/spam-catcher setup` and `/spam-catcher lang`.
 
 The bot uses `Guilds`, `GuildMessages`, and `MessageContent` gateway intents. `MessageContent` is needed so Discord includes attachment data for Automatic Spam Detection.
 
@@ -84,7 +86,7 @@ npm start
 On startup the bot:
 
 - logs in to Discord
-- registers `/spam-catcher setup`
+- refreshes the global `/spam-catcher` application command with all current subcommands
 - starts the delayed-ban loop
 - creates missing PostgreSQL tables when needed
 - watches messages for Automatic Spam Detection when enabled per guild
@@ -99,19 +101,27 @@ Run inside the Discord server as an Administrator:
 /spam-catcher setup
 ```
 
-The setup dashboard uses Discord Component V2 and has five summary containers. Buttons open focused ephemeral setup panels.
+Set the server UI language with:
+
+```text
+/spam-catcher lang language: English
+/spam-catcher lang language: Indonesia
+```
+
+The setup dashboard uses Discord Component V2 and has summary containers. Buttons open focused ephemeral setup panels.
 
 - `Spam Catcher Summary`: main trap-channel enable state and current result
 - `Channels / Timeout Summary`: trap channels, review channel, log channel, timeout duration
 - `Auto Ban Summary`: Auto Ban state and ban timing
 - `Automatic Spam Detection Summary`: attachment-spam detector state and action
 - `Trap Notices Summary`: notice posting status
+- Language is stored per guild and used for setup UI, trap notices, Automatic Detection Danger cards, timeout DMs, appeal modals, and shared moderation messages.
 
 Saved trap/review/log channels are preselected when reopening the setup panel.
 
 Settings save immediately. `Enable Spam Catcher` only controls whether trap-channel messages are handled. Enable is blocked until trap, review, and log channels are set.
 
-`Enable Automatic Detection` is independent from `Enable Spam Catcher`. It requires only the log channel because Danger cards use that channel.
+`Enable Automatic Detection` is independent from `Enable Spam Catcher`. It requires only the log channel because Danger cards use that channel. Servers can use Automatic Detection without trap channels.
 
 ## Timeout And Ban Options
 
@@ -166,11 +176,20 @@ Danger action:
 - increments `spammer_count` by `1`
 - times out the user for `28 days`
 - sends a Component V2 Danger card to the configured log channel
+- DMs the user with the shared timeout/appeal workflow when DMs are available
+
+Automatic Detection appeals:
+
+- The DM appeal button opens the same style appeal modal as trap-channel Spam Catcher.
+- Appeal text is saved on the Automatic Detection event and shown on the Danger card.
+- If the user has left, been kicked, or been banned before admin action, the Danger card is updated without crashing.
 
 Danger card buttons:
 
 - `Remove Timeout`: admin only, removes timeout, sets `spammer = 0`, edits card resolved
 - `Ban User`: admin only, bans user, sets `spammer = 0` only if ban succeeds, edits card resolved
+
+Timeout removal always calls Discord's `member.timeout(null, ...)` when the member still exists. It does not rely on cached timeout fields, which can be stale or missing.
 
 ## Trap Notices
 
@@ -209,8 +228,11 @@ npm run config:upsert -- \
   --timeout-minutes 60 \
   --auto-ban false \
   --ban-mode delayed \
-  --ban-delay-minutes 10
+  --ban-delay-minutes 10 \
+  --language en
 ```
+
+Supported language values are `en` and `id`.
 
 List configs:
 

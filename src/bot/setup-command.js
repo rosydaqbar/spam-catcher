@@ -61,12 +61,10 @@ function createSetupCommandManager({ client, configStore }) {
         .setDescription('Show Spam Catcher commands and features'))
       .addSubcommand((subcommand) => subcommand
         .setName('setup')
-        .setDescription('Open the Spam Catcher setup panel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator))
+        .setDescription('Open the Spam Catcher setup panel'))
       .addSubcommand((subcommand) => subcommand
         .setName('lang')
         .setDescription('Set the Spam Catcher interface language')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption((option) => option
           .setName('language')
           .setDescription('Language to use for Spam Catcher UI in this server')
@@ -78,7 +76,6 @@ function createSetupCommandManager({ client, configStore }) {
       .addSubcommand((subcommand) => subcommand
         .setName('check')
         .setDescription('Check spam status for a user')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption((option) => option
           .setName('user')
           .setDescription('User to check')

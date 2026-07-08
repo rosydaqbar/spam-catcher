@@ -17,7 +17,10 @@ Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by def
 
 `Moderate Members` is required for timeout and timeout removal. `Message Content Intent` is required so Discord includes message attachment data.
 
-**Privacy note:** Spam Catcher does not read or analyze message text. Automatic Spam Detection only uses message metadata needed for moderation, such as author, channel, attachment count, attachment image URL for optional AI Verdict, and timestamps.
+> [!IMPORTANT]
+> **Privacy: Spam Catcher does not read or analyze message text.**
+>
+> `Message Content Intent` is used so Discord includes attachment metadata. Automatic Spam Detection only uses moderation metadata: author, channel, attachment count, timestamps, and the attachment image URL when optional AI Verdict is enabled.
 
 ## Quick Start
 

@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   timeout_error TEXT,
   status TEXT NOT NULL DEFAULT 'danger',
   appeal_message TEXT,
+  ai_vision_status TEXT,
+  ai_vision_model TEXT,
+  ai_vision_image_url TEXT,
+  ai_vision_confidence DOUBLE PRECISION,
+  ai_vision_caption TEXT,
+  ai_vision_ocr_text TEXT,
+  ai_vision_matched_words_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ai_vision_error TEXT,
+  ai_vision_checked_at TIMESTAMPTZ,
   review_channel_id TEXT,
   review_message_id TEXT,
   decided_by TEXT,
@@ -75,6 +84,9 @@ CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_created
 
 CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_ban_due
   ON spam_catcher_events(status, ban_after);
+
+CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_user
+  ON spam_catcher_events(guild_id, user_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_spam_catcher_notice_messages_guild
   ON spam_catcher_notice_messages(guild_id);

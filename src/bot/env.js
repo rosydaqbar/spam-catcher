@@ -1,4 +1,13 @@
-const { DISCORD_TOKEN, DATABASE_URL, ALLOWED_GUILD_IDS, DEBUG } = process.env;
+const {
+  DISCORD_TOKEN,
+  DATABASE_URL,
+  ALLOWED_GUILD_IDS,
+  DEBUG,
+  OPENROUTER_API_KEY,
+  OPENROUTER_MODEL,
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
+} = process.env;
 
 function parseAllowedGuildIds(value = ALLOWED_GUILD_IDS) {
   return new Set(
@@ -25,6 +34,10 @@ module.exports = {
   DATABASE_URL,
   ALLOWED_GUILD_IDS,
   DEBUG,
+  OPENROUTER_API_KEY,
+  OPENROUTER_MODEL,
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
   parseAllowedGuildIds,
   requireRuntimeEnv,
 };

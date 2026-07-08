@@ -56,6 +56,7 @@ function buildTrapNoticePayload(caughtCount, config) {
     flags: MessageFlags.IsComponentsV2,
     components: [
       new ContainerBuilder()
+        .setAccentColor(0xef4444)
         .addTextDisplayComponents(new TextDisplayBuilder().setContent(text)),
     ],
     allowedMentions: { parse: [] },
@@ -69,6 +70,7 @@ function buildTrapNoticeRestPayload(caughtCount, config) {
     components: [
       {
         type: 17,
+        accent_color: 0xef4444,
         components: [
           { type: 10, content: text },
         ],

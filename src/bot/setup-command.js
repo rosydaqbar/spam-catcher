@@ -5,9 +5,12 @@ const {
   ChannelSelectMenuBuilder,
   ChannelType,
   MessageFlags,
+  ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require('discord.js');
 const {
   ContainerBuilder,
@@ -16,12 +19,13 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { createLogger } = require('../lib/logger');
-const { parseAllowedGuildIds } = require('./env');
+const { GEMINI_API_KEY, OPENROUTER_API_KEY, parseAllowedGuildIds } = require('./env');
 const { createTranslator, languageName, normalizeLanguage } = require('./i18n');
 const { buildTrapNoticePayload } = require('./trap-notice-payload');
 
 const COMMAND_NAME = 'spam-catcher';
 const SETUP_PREFIX = 'spamsetup';
+const AI_VISION_WORDS_MODAL = `${SETUP_PREFIX}:aivision_words_modal`;
 const logger = createLogger('spam-catcher-setup');
 
 const TIMEOUT_OPTIONS = [
@@ -67,6 +71,13 @@ function createSetupCommandManager({ client, configStore }) {
             { name: 'English', value: 'en' },
             { name: 'Indonesia', value: 'id' }
           )))
+      .addSubcommand((subcommand) => subcommand
+        .setName('check')
+        .setDescription('Check spam status for a user')
+        .addUserOption((option) => option
+          .setName('user')
+          .setDescription('User to check')
+          .setRequired(true)))
       .toJSON();
   }
 
@@ -118,11 +129,11 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function requireAdmin(interaction) {
     if (!interaction.inGuild()) {
-      await interaction.reply(buildInfoPayload('Spam Catcher Setup', 'Run this command inside a Discord server.')).catch(() => null);
+      await interaction.reply(buildInfoPayload('⚙️ Spam Catcher Setup', '⚠️ Run this command inside a Discord server.')).catch(() => null);
       return false;
     }
     if (!isAdmin(interaction)) {
-      await interaction.reply(buildInfoPayload('Spam Catcher Setup', 'Only users with Administrator permission can configure Spam Catcher.')).catch(() => null);
+      await interaction.reply(buildInfoPayload('⚙️ Spam Catcher Setup', '🔒 Only users with Administrator permission can configure Spam Catcher.')).catch(() => null);
       return false;
     }
     return true;
@@ -272,6 +283,31 @@ function createSetupCommandManager({ client, configStore }) {
         .setDisabled(!isAutomaticSpamDetectionReady(config));
   }
 
+  function hasAiVisionKey() {
+    return Boolean(
+      (typeof OPENROUTER_API_KEY === 'string' && OPENROUTER_API_KEY.trim().length > 0)
+      || (typeof GEMINI_API_KEY === 'string' && GEMINI_API_KEY.trim().length > 0)
+    );
+  }
+
+  function aiVisionToggleButton(config) {
+    const t = createTranslator(config.language);
+    return config.aiVisionSpamCheckEnabled
+      ? new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:aivision:off`)
+        .setLabel(t('setup.disableAiVision'))
+        .setStyle(ButtonStyle.Secondary)
+      : new ButtonBuilder()
+        .setCustomId(`${SETUP_PREFIX}:aivision:on`)
+        .setLabel(t('setup.enableAiVision'))
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!hasAiVisionKey());
+  }
+
+  function aiVisionTriggerWordsText(config) {
+    return config.aiVisionTriggerWords.join('\n').slice(0, 4000);
+  }
+
   function buildDashboardPayload(guildId, config, statusMessage, { ephemeral = false } = {}) {
     const t = createTranslator(config.language);
     const isReady = isConfigReady(config);
@@ -289,8 +325,8 @@ function createSetupCommandManager({ client, configStore }) {
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `# ${t('setup.dashboardTitle')}`,
-          `\`${t('setup.guild')}\` ${guildId}`,
-          `**${t('setup.status')}:** \`${statusLabel}\`${statusSuffix(statusMessage, config)}`,
+          `-# ${t('setup.guild')}: \`${guildId}\``,
+          `**🛡️ ${t('setup.status')}:** \`${statusLabel}\`${statusSuffix(statusMessage, config)}`,
         ].join('\n'))
       )
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
@@ -298,8 +334,8 @@ function createSetupCommandManager({ client, configStore }) {
         buttonSection(
           t('setup.spamSummary'),
           [
-            `**${t('setup.config')}:** ${setupStatus(config)}`,
-            `**${t('setup.result')}:** ${outcomeLabel(config)}`,
+            `**${t('setup.config')}:** \`${setupStatus(config)}\``,
+            `**${t('setup.result')}:** \`${outcomeLabel(config)}\``,
           ].join('\n'),
           openPanelButton('spam', t('setup.openSettings'))
         )
@@ -322,7 +358,7 @@ function createSetupCommandManager({ client, configStore }) {
             `**${t('setup.trap')}:** ${mentionChannelsLocalized(config.channelIds, t)}`,
             `**${t('setup.review')}:** ${mentionChannelLocalized(config.reviewChannelId, t)}`,
             `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
-            `**${t('setup.timeout')}:** ${formatMinutes(config.timeoutMinutes, config.language)}`,
+            `**${t('setup.timeout')}:** \`${formatMinutes(config.timeoutMinutes, config.language)}\``,
           ].join('\n'),
           openPanelButton('channels', t('setup.editChannels'))
         )
@@ -334,10 +370,10 @@ function createSetupCommandManager({ client, configStore }) {
         buttonSection(
           t('setup.autoBanSummary'),
           [
-            `**${t('setup.status')}:** \`${config.autoBanEnabled ? t('setup.enabledStatus') : 'OFF'}\``,
-            `**${t('setup.result')}:** ${outcomeLabel(config)}`,
+            `**${t('setup.status')}:** \`${config.autoBanEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
+            `**${t('setup.result')}:** \`${outcomeLabel(config)}\``,
             config.autoBanEnabled && config.banMode === 'delayed'
-              ? `**Appeal window:** ${formatMinutes(config.banDelayMinutes, config.language)}`
+              ? `**Appeal window:** \`${formatMinutes(config.banDelayMinutes, config.language)}\``
               : null,
           ].filter(Boolean).join('\n'),
           openPanelButton('autoban', t('setup.editAutoBan'), config.autoBanEnabled ? ButtonStyle.Danger : ButtonStyle.Primary)
@@ -351,8 +387,9 @@ function createSetupCommandManager({ client, configStore }) {
           t('setup.automaticSummary'),
           [
             `**${t('setup.status')}:** \`${automaticStatus}\``,
-            `**Trigger:** ${config.attachmentSpamThreshold}+ attachments twice within ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)}`,
-            `**Action:** timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, log Danger card`,
+            `**Trigger:** \`${config.attachmentSpamThreshold}+ attachments twice within ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)}\``,
+            `**Action:** \`timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, log Danger card\``,
+            `**${t('setup.aiVision')}:** \`${config.aiVisionSpamCheckEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
             `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
             `-# ${t('setup.independentDetection')}`,
           ].join('\n'),
@@ -366,7 +403,7 @@ function createSetupCommandManager({ client, configStore }) {
         buttonSection(
           t('setup.noticesSummary'),
           [
-            `**${t('setup.trap')}:** ${config.channelIds.length}`,
+            `**${t('setup.trap')}:** \`${config.channelIds.length}\``,
             isReady
               ? t('setup.postNoticesReady')
               : t('setup.postNoticesNotReady'),
@@ -392,13 +429,13 @@ function createSetupCommandManager({ client, configStore }) {
           t('setup.openSettings'),
           [
             `**${t('setup.status')}:** \`${statusLabel}\``,
-            `**${t('setup.config')}:** ${setupStatus(config)}`,
-            `**${t('setup.result')}:** ${outcomeLabel(config)}`,
+            `**${t('setup.config')}:** \`${setupStatus(config)}\``,
+            `**${t('setup.result')}:** \`${outcomeLabel(config)}\``,
             config.enabled
-              ? 'Trap-channel messages are handled using saved settings.'
+              ? '✅ Trap-channel messages are handled using saved settings.'
               : isReady
-                ? 'Settings are saved, but trap-channel messages are ignored until enabled.'
-                : 'Set trap, review, and log channels before enabling.',
+                ? '🟡 Settings are saved, but trap-channel messages are ignored until enabled.'
+                : '⚠️ Set trap, review, and log channels before enabling.',
             statusSuffix(statusMessage, config).trim(),
           ].filter(Boolean).join('\n'),
           spamCatcherToggleButton(config)
@@ -418,7 +455,7 @@ function createSetupCommandManager({ client, configStore }) {
           `**${t('setup.trap')}:** ${mentionChannelsLocalized(config.channelIds, t)}`,
           `**${t('setup.review')}:** ${mentionChannelLocalized(config.reviewChannelId, t)}`,
           `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
-          `**${t('setup.timeout')}:** ${formatMinutes(config.timeoutMinutes, config.language)}`,
+          `**${t('setup.timeout')}:** \`${formatMinutes(config.timeoutMinutes, config.language)}\``,
           `-# ${t('setup.settingsSavedImmediately')}`,
           statusSuffix(statusMessage, config).trim(),
         ].filter(Boolean).join('\n'))
@@ -460,7 +497,7 @@ function createSetupCommandManager({ client, configStore }) {
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `## ${t('setup.timeout')}`,
-          `Current timeout is **${formatMinutes(config.timeoutMinutes, config.language)}**.`,
+          `**Current timeout:** \`${formatMinutes(config.timeoutMinutes, config.language)}\``,
           '-# Used by Timeout Only, Ban After Appeal Window, and Ban After Timeout Ends. Ban Immediately skips timeout.',
         ].join('\n'))
       )
@@ -485,9 +522,9 @@ function createSetupCommandManager({ client, configStore }) {
           config.autoBanEnabled ? t('setup.autoBanSummary') : t('setup.autoBanSummary'),
           [
             config.autoBanEnabled
-              ? 'Caught users are banned using ban timing below.'
-              : 'Caught users receive timeout only. No automatic ban is scheduled.',
-            `**${t('setup.result')}:** ${outcomeLabel(config)}`,
+              ? '🔨 Caught users are banned using ban timing below.'
+              : '🛡️ Caught users receive timeout only. No automatic ban is scheduled.',
+            `**${t('setup.result')}:** \`${outcomeLabel(config)}\``,
             statusSuffix(statusMessage, config).trim(),
           ].filter(Boolean).join('\n'),
           autoBanToggleButton(config)
@@ -499,7 +536,7 @@ function createSetupCommandManager({ client, configStore }) {
         .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
         .addTextDisplayComponents(
           new TextDisplayBuilder().setContent([
-            '## Ban Timing',
+            '## 🔨 Ban Timing',
             'Choose when Auto Ban happens.',
           ].join('\n'))
         )
@@ -507,15 +544,15 @@ function createSetupCommandManager({ client, configStore }) {
           new ActionRowBuilder().addComponents(
             new ButtonBuilder()
               .setCustomId(`${SETUP_PREFIX}:mode:delayed`)
-              .setLabel('Ban After Appeal Window')
+              .setLabel('📝 Ban After Appeal Window')
               .setStyle(config.banMode === 'delayed' ? ButtonStyle.Primary : ButtonStyle.Secondary),
             new ButtonBuilder()
               .setCustomId(`${SETUP_PREFIX}:mode:immediate`)
-              .setLabel('Ban Immediately')
+              .setLabel('🔨 Ban Immediately')
               .setStyle(config.banMode === 'immediate' ? ButtonStyle.Danger : ButtonStyle.Secondary),
             new ButtonBuilder()
               .setCustomId(`${SETUP_PREFIX}:mode:after_timeout`)
-              .setLabel('Ban After Timeout Ends')
+              .setLabel('⏳ Ban After Timeout Ends')
               .setStyle(config.banMode === 'after_timeout' ? ButtonStyle.Primary : ButtonStyle.Secondary)
           )
         );
@@ -526,9 +563,9 @@ function createSetupCommandManager({ client, configStore }) {
         .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
         .addTextDisplayComponents(
           new TextDisplayBuilder().setContent([
-            '## Appeal Window',
-            `Current appeal window: **${formatMinutes(config.banDelayMinutes, config.language)}**`,
-            'Shown only for Ban After Appeal Window.',
+            '## 📝 Appeal Window',
+            `**Current appeal window:** \`${formatMinutes(config.banDelayMinutes, config.language)}\``,
+            '-# Shown only for Ban After Appeal Window.',
           ].join('\n'))
         )
         .addActionRowComponents(
@@ -555,15 +592,38 @@ function createSetupCommandManager({ client, configStore }) {
           t('setup.automaticSummary'),
           [
             `**${t('setup.status')}:** \`${statusLabel}\``,
-            `**Trigger:** first ${config.attachmentSpamThreshold}+ attachment message starts fixed ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)} window.`,
-            `**Danger:** next ${config.attachmentSpamThreshold}+ attachment message by same user inside window.`,
-            `**Action:** set spammer=1, increment spammer_count, timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, post Danger card to log channel.`,
+            `**Trigger:** \`first ${config.attachmentSpamThreshold}+ attachment message starts fixed ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)} window.\``,
+            `**Danger:** \`next ${config.attachmentSpamThreshold}+ attachment message by same user inside window.\``,
+            `**Action:** \`set spammer=1, increment spammer_count, timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, post Danger card to log channel.\``,
             `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
             '-# Watches all guild channels when enabled. Ignores bots, webhooks, and users bot cannot moderate.',
             `-# ${t('setup.independentDetection')}`,
             statusSuffix(statusMessage, config).trim(),
           ].filter(Boolean).join('\n'),
           automaticSpamDetectionToggleButton(config)
+        )
+      );
+
+    container
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addSectionComponents(
+        buttonSection(
+          t('setup.aiVision'),
+          [
+            `**${t('setup.status')}:** \`${config.aiVisionSpamCheckEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
+            `**${t('setup.aiVisionConfidence')}:** \`${Math.round(config.aiVisionConfidenceThreshold * 100)}%\``,
+            `**${t('setup.aiVisionTriggerWords')}:** \`${config.aiVisionTriggerWords.length}\``,
+            `-# ${t('setup.aiVisionFirstImageOnly')}`,
+          ].join('\n'),
+          aiVisionToggleButton(config)
+        )
+      )
+      .addActionRowComponents(
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`${SETUP_PREFIX}:aivision_words`)
+            .setLabel(t('setup.editAiVisionTriggerWords'))
+            .setStyle(ButtonStyle.Primary)
         )
       );
 
@@ -581,7 +641,7 @@ function createSetupCommandManager({ client, configStore }) {
           [
             'Post or refresh warning message in each trap channel using current timeout and Auto Ban settings.',
             `**${t('setup.trap')}:** ${mentionChannelsLocalized(config.channelIds, t)}`,
-            `**${t('setup.language')}:** ${languageName(config.language)}`,
+            `**${t('setup.language')}:** \`${languageName(config.language)}\``,
             statusSuffix(statusMessage, config).trim(),
           ].filter(Boolean).join('\n'),
           new ButtonBuilder()
@@ -854,6 +914,75 @@ function createSetupCommandManager({ client, configStore }) {
     return true;
   }
 
+  async function handleCheckCommand(interaction) {
+    if (!await requireAdmin(interaction)) return true;
+    const userId = interaction.options.getUser('user', true).id;
+    const config = await configStore.getSpamCatcherConfig(interaction.guildId);
+    const t = createTranslator(config.language);
+
+    const [autoUser, autoEvents, trapEvents] = await Promise.all([
+      configStore.getAutomaticSpamDetectionUser(interaction.guildId, userId).catch(() => null),
+      configStore.getAutomaticSpamDetectionEventsByUser(interaction.guildId, userId).catch(() => []),
+      configStore.getSpamCatcherEventsByUser(interaction.guildId, userId).catch(() => []),
+    ]);
+
+    function truncate(str, max) {
+      if (!str) return '';
+      return str.length > max ? str.slice(0, max) + '…' : str;
+    }
+
+    function ts(date) {
+      if (!date) return null;
+      return `<t:${Math.floor(date.getTime() / 1000)}:R>`;
+    }
+
+    const autoState = autoUser
+      ? (autoUser.spammer ? `\`${t('automatic.spammerStateActive')}\`` : `\`${t('automatic.spammerStateCleared')}\``)
+      : `\`${t('check.neverFlagged')}\``;
+
+    const autoEventsBlock = autoEvents.length
+      ? autoEvents.map((e, i) =>
+        `${i + 1}. \`${e.status}\` — ${truncate(e.reason, 50)}, ${ts(e.createdAt)}`
+      ).join('\n')
+      : `-# ${t('check.noEvents')}`;
+
+    const trapEventsBlock = trapEvents.length
+      ? trapEvents.map((e, i) =>
+        `${i + 1}. \`${e.status}\` — <#${e.channelId}>, ${ts(e.createdAt)}`
+      ).join('\n')
+      : `-# ${t('check.noEvents')}`;
+
+    const lines = [
+      `### 🔍 ${t('check.title')}`,
+      `**${t('automatic.user')}:** <@${userId}> (\`${userId}\`)`,
+      '',
+      `### 📎 ${t('check.autoDetection')}`,
+      `**${t('check.state')}:** ${autoState}`,
+      autoUser ? `**${t('automatic.spammerCount')}:** \`${autoUser.spammerCount}\`` : null,
+      autoUser?.lastAlertAt ? `**${t('check.lastAlert')}:** ${ts(autoUser.lastAlertAt)}` : null,
+      autoUser?.lastDangerAt ? `**${t('check.lastDanger')}:** ${ts(autoUser.lastDangerAt)}` : null,
+      '',
+      `**${t('check.recentEvents')}**`,
+      autoEventsBlock,
+      '',
+      `### 🧲 ${t('check.trapEvents')}`,
+      trapEventsBlock,
+    ];
+
+    const body = lines.filter(Boolean).join('\n');
+
+    await interaction.reply({
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0x3b82f6)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(body)),
+      ],
+      allowedMentions: { parse: [] },
+    });
+    return true;
+  }
+
   async function saveAndUpdate(interaction, nextConfig, statusMessage, buildPayload = buildDashboardPayload) {
     const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, nextConfig);
     await interaction.update(buildPayload(interaction.guildId, saved, statusMessage)).catch(async () => {
@@ -970,6 +1099,43 @@ function createSetupCommandManager({ client, configStore }) {
       return true;
     }
 
+    if (action === 'aivision') {
+      if (value === 'on' && !hasAiVisionKey()) {
+        await interaction.update(buildAutomaticSpamDetectionPanelPayload(
+          interaction.guildId,
+          config,
+          t('setup.cannotEnableAiVision')
+        ));
+        return true;
+      }
+      await saveAndUpdate(
+        interaction,
+        { ...config, aiVisionSpamCheckEnabled: value === 'on' },
+        value === 'on' ? t('setup.aiVisionEnabled') : t('setup.aiVisionDisabled'),
+        buildAutomaticSpamDetectionPanelPayload
+      );
+      return true;
+    }
+
+    if (action === 'aivision_words') {
+      const modal = new ModalBuilder()
+        .setCustomId(AI_VISION_WORDS_MODAL)
+        .setTitle(t('setup.editAiVisionTriggerWords'))
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('words')
+              .setLabel(t('setup.aiVisionTriggerWords'))
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(4000)
+              .setValue(aiVisionTriggerWordsText(config))
+          )
+        );
+      await interaction.showModal(modal);
+      return true;
+    }
+
     if (action === 'post_notices') {
       await interaction.deferUpdate().catch(() => null);
       const saved = await configStore.getSpamCatcherConfig(interaction.guildId);
@@ -1004,6 +1170,26 @@ function createSetupCommandManager({ client, configStore }) {
     return false;
   }
 
+  async function handleModal(interaction) {
+    if (interaction.customId !== AI_VISION_WORDS_MODAL) return false;
+    if (!await requireAdmin(interaction)) return true;
+
+    const config = await configStore.getSpamCatcherConfig(interaction.guildId);
+    const t = createTranslator(config.language);
+    const words = interaction.fields.getTextInputValue('words');
+    const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, {
+      ...config,
+      aiVisionTriggerWords: words,
+    });
+    await interaction.reply(buildAutomaticSpamDetectionPanelPayload(
+      interaction.guildId,
+      saved,
+      t('setup.aiVisionTriggerWordsSaved'),
+      { ephemeral: true }
+    ));
+    return true;
+  }
+
   async function handleInteraction(interaction) {
     if (interaction.isChatInputCommand()
       && interaction.commandName === COMMAND_NAME
@@ -1015,12 +1201,20 @@ function createSetupCommandManager({ client, configStore }) {
       && interaction.options.getSubcommand(false) === 'lang') {
       return handleLangCommand(interaction);
     }
+    if (interaction.isChatInputCommand()
+      && interaction.commandName === COMMAND_NAME
+      && interaction.options.getSubcommand(false) === 'check') {
+      return handleCheckCommand(interaction);
+    }
     if ((interaction.isChannelSelectMenu?.() || interaction.isStringSelectMenu?.())
       && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {
       return handleSelect(interaction);
     }
     if (interaction.isButton() && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {
       return handleButton(interaction);
+    }
+    if (interaction.isModalSubmit?.() && interaction.customId.startsWith(`${SETUP_PREFIX}:`)) {
+      return handleModal(interaction);
     }
     return false;
   }

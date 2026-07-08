@@ -190,6 +190,10 @@ DATABASE_URL=postgresql://spamcatcher:REPLACE_WITH_DB_PASS@127.0.0.1:5432/spam_c
 PG_SSL_MODE=disable
 BOT_POSTGRES_POOL_MAX=2
 ALLOWED_GUILD_IDS=
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=xiaomi/mimo-v2.5
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
 DEBUG=false
 ```
 
@@ -202,6 +206,7 @@ Do not put guild-specific IDs in `.env`. These values belong in `spam_catcher_co
 - Timeout and ban behavior
 - Webhook notice settings
 - Automatic Spam Detection enabled state
+- AI Verdict Checker enabled state and trigger words
 
 Then run:
 
@@ -217,9 +222,11 @@ Preferred path: start the bot, then run this command inside the Discord server a
 /spam-catcher setup
 ```
 
-The command opens a Component V2 setup dashboard. Use its buttons to open focused panels for trap channels, review channel, log channel, moderation mode, Automatic Spam Detection, and trap notices.
+The command opens a Component V2 setup dashboard. Use its buttons to open focused panels for trap channels, review channel, log channel, moderation mode, Automatic Spam Detection, AI Verdict Checker, and trap notices.
 
 Enable `Message Content Intent` in the Discord Developer Portal before using Automatic Spam Detection. Discord must send attachment data to the bot.
+
+`OPENROUTER_API_KEY` or `GEMINI_API_KEY` is required only when AI Verdict Checker is enabled for a guild. OpenRouter is preferred by default with model `xiaomi/mimo-v2.5`; Gemini remains fallback. AI Verdict analyzes the first image attachment on Automatic Detection danger triggers, asks the provider for up to 3 trigger-matching snippets/confidence, and applies timeout only when configured trigger words match with confidence at or above `0.7`.
 
 CLI setup is also available.
 

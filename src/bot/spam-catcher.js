@@ -11,7 +11,6 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
-const { createTranslator } = require('./i18n');
 const { createModerationWorkflow } = require('./moderation-workflow');
 const { buildTrapNoticePayload } = require('./trap-notice-payload');
 
@@ -40,12 +39,6 @@ function createSpamCatcherManager({ client, configStore }) {
     const value = await configStore.getSpamCatcherConfig(guildId);
     configCache.set(guildId, { value, expiresAt: Date.now() + CONFIG_CACHE_TTL_MS });
     return value;
-  }
-
-  async function createDmChannel(userId) {
-    const user = await client.users.fetch(userId).catch(() => null);
-    if (!user) return null;
-    return user.createDM().catch(() => null);
   }
 
   function safeError(error) {
@@ -109,26 +102,27 @@ function createSpamCatcherManager({ client, configStore }) {
   async function logAction(event, title, details = []) {
     const logChannel = await getLogChannel(event.guildId);
     if (!logChannel) return;
+    const icon = title.includes('Banned') || title.includes('Failed') ? '🚨' : title.includes('Removed') ? '✅' : '🧲';
     await logChannel.send({
       flags: MessageFlags.IsComponentsV2,
       components: [
         new ContainerBuilder()
-          .setAccentColor(title.includes('Banned') ? 0xef4444 : 0xf59e0b)
+          .setAccentColor(title.includes('Banned') || title.includes('Failed') ? 0xef4444 : title.includes('Removed') ? 0x22c55e : 0xf59e0b)
           .addTextDisplayComponents(
             new TextDisplayBuilder().setContent(
               [
-                `### ${title}`,
-                `- User: <@${event.userId}> (\`${event.userId}\`)`,
-                `- Channel: <#${event.channelId}> (\`${event.channelId}\`)`,
-                event.messageId ? `- Message ID: \`${event.messageId}\`` : null,
-                `- Event ID: \`${event.id}\``,
+                `### ${icon} ${title}`,
+                `**User:** <@${event.userId}> (\`${event.userId}\`)`,
+                `**Channel:** <#${event.channelId}> (\`${event.channelId}\`)`,
+                event.messageId ? `**Message ID:** \`${event.messageId}\`` : null,
+                `**Event ID:** \`${event.id}\``,
                 ...details,
               ].filter(Boolean).join('\n')
             )
           )
           .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
           .addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(`-# Logged <t:${Math.floor(Date.now() / 1000)}:F>`)
+            new TextDisplayBuilder().setContent(`-# 🕒 Logged <t:${Math.floor(Date.now() / 1000)}:F>`)
           ),
       ],
       allowedMentions: { parse: [] },
@@ -143,31 +137,31 @@ function createSpamCatcherManager({ client, configStore }) {
   }
 
   function reviewActionLabel(event) {
-    if (event.action === 'ban_immediate') return 'Ban immediately';
-    if (event.action === 'ban_after_timeout') return 'Ban after timeout ends';
-    if (event.action === 'ban_delayed') return 'Ban after appeal window';
-    return 'Timeout only';
+    if (event.action === 'ban_immediate') return '🔨 Ban immediately';
+    if (event.action === 'ban_after_timeout') return '⏳ Timeout, then 🔨 ban when timeout ends';
+    if (event.action === 'ban_delayed') return '📝 Timeout, then 🔨 ban after appeal window';
+    return '⏳ Timeout only';
   }
 
   function reviewStatusLabel(event) {
     const labels = {
-      caught: 'Caught',
-      timed_out: 'Timed out',
-      ban_pending: 'Ban pending',
-      banned: 'Banned',
-      ban_failed: 'Ban failed',
-      timeout_failed: 'Timeout failed',
-      timeout_removed: 'Timeout removed',
+      caught: '🧲 Caught',
+      timed_out: '⏳ Timed out',
+      ban_pending: '📝 Ban pending',
+      banned: '🔨 Banned',
+      ban_failed: '🚨 Ban failed',
+      timeout_failed: '🚨 Timeout failed',
+      timeout_removed: '✅ Timeout removed',
     };
     return labels[event.status] || event.status || 'Unknown';
   }
 
   function reviewTitle(event) {
-    if (event.status === 'banned') return 'Spam Catcher Banned User';
-    if (event.status === 'ban_failed') return 'Spam Catcher Ban Failed';
-    if (event.status === 'timeout_failed') return 'Spam Catcher Timeout Failed';
-    if (event.status === 'timeout_removed') return 'Spam Catcher Timeout Removed';
-    return 'Spam Catcher Review';
+    if (event.status === 'banned') return '🔨 Spam Catcher Banned User';
+    if (event.status === 'ban_failed') return '🚨 Spam Catcher Ban Failed';
+    if (event.status === 'timeout_failed') return '🚨 Spam Catcher Timeout Failed';
+    if (event.status === 'timeout_removed') return '✅ Spam Catcher Timeout Removed';
+    return '🧲 Spam Catcher Review';
   }
 
   function reviewAccentColor(event) {
@@ -180,14 +174,14 @@ function createSpamCatcherManager({ client, configStore }) {
     if (event.status === 'banned' || event.status === 'timeout_removed') return null;
     if (!event.banAfter) return null;
     const scheduledAt = timestamp(event.banAfter);
-    if (event.action === 'ban_after_timeout') return `- Ban after timeout ends: ${scheduledAt}`;
-    if (event.action === 'ban_delayed') return `- Ban after appeal window: ${scheduledAt}`;
-    return `- Scheduled ban: ${scheduledAt}`;
+    if (event.action === 'ban_after_timeout') return `**Ban after timeout ends:** ${scheduledAt}`;
+    if (event.action === 'ban_delayed') return `**Ban after appeal window:** ${scheduledAt}`;
+    return `**Scheduled ban:** ${scheduledAt}`;
   }
 
   function catcherMessageLine(event) {
-    if (!event.messageId) return `- Catcher message: unavailable in <#${event.channelId}> (\`${event.channelId}\`)`;
-    return `- Catcher message: https://discord.com/channels/${event.guildId}/${event.channelId}/${event.messageId}`;
+    if (!event.messageId) return `**Catcher message:** unavailable in <#${event.channelId}> (\`${event.channelId}\`)`;
+    return `**Catcher message:** https://discord.com/channels/${event.guildId}/${event.channelId}/${event.messageId}`;
   }
 
   function canReviewTimeout(event) {
@@ -203,19 +197,19 @@ function createSpamCatcherManager({ client, configStore }) {
             `### ${reviewTitle(event)}`,
             '-# A user was caught by a Spam Catcher trap channel.',
             '',
-            `- User: <@${event.userId}> (\`${event.userId}\`)`,
+            `**User:** <@${event.userId}> (\`${event.userId}\`)`,
             catcherMessageLine(event),
-            `- Action: \`${reviewActionLabel(event)}\``,
-            `- Status: **${reviewStatusLabel(event)}**`,
+            `**Action:** \`${reviewActionLabel(event)}\``,
+            `**Status:** \`${reviewStatusLabel(event)}\``,
             event.timeoutUntil && event.status !== 'banned' && event.status !== 'timeout_removed'
-              ? `- Timeout until: ${timestamp(event.timeoutUntil)}`
+              ? `**Timeout until:** ${timestamp(event.timeoutUntil)}`
               : null,
             scheduledBanLine(event),
-            event.bannedAt ? `- Banned: ${timestamp(event.bannedAt, 'F')}` : null,
-            event.decidedBy ? `- Decided by: <@${event.decidedBy}>` : null,
-            `- Event ID: \`${event.id}\``,
+            event.bannedAt ? `**Banned:** ${timestamp(event.bannedAt, 'F')}` : null,
+            event.decidedBy ? `**Decided by:** <@${event.decidedBy}>` : null,
+            `**Event ID:** \`${event.id}\``,
             event.appealMessage ? '' : null,
-            event.appealMessage ? `**Appeal:** ${event.appealMessage}` : null,
+            event.appealMessage ? `### 📝 Appeal\n${event.appealMessage}` : null,
           ].filter(Boolean).join('\n')
         )
       );
@@ -253,13 +247,13 @@ function createSpamCatcherManager({ client, configStore }) {
           .addTextDisplayComponents(
             new TextDisplayBuilder().setContent(
               [
-                '### Confirm Remove Timeout',
-                `- User: <@${event.userId}> (\`${event.userId}\`)`,
-                `- Requested by: <@${adminId}>`,
-                `- Event ID: \`${event.id}\``,
+                '### ⚠️ Confirm Remove Timeout',
+                `**User:** <@${event.userId}> (\`${event.userId}\`)`,
+                `**Requested by:** <@${adminId}>`,
+                `**Event ID:** \`${event.id}\``,
                 '',
-                '⚠️ Removing this timeout will let the user send messages again. If they were testing or spamming, they may send spam messages again.',
-                event.banAfter ? '🛑 This also cancels the scheduled Spam Catcher ban for this event.' : null,
+                '**⚠️ Risk:** \`Removing this timeout lets the user send messages again.\`',
+                event.banAfter ? '**Scheduled ban:** \`this action also cancels the scheduled Spam Catcher ban for this event.\`' : null,
               ].filter(Boolean).join('\n')
             )
           )
@@ -268,11 +262,11 @@ function createSpamCatcherManager({ client, configStore }) {
             new ActionRowBuilder().addComponents(
               new ButtonBuilder()
                 .setCustomId(`${REMOVE_TIMEOUT_CONFIRM_PREFIX}:${event.id}`)
-                .setLabel('Confirm Remove Timeout')
+                .setLabel('✅ Confirm Remove Timeout')
                 .setStyle(ButtonStyle.Success),
               new ButtonBuilder()
                 .setCustomId(`${REMOVE_TIMEOUT_CANCEL_PREFIX}:${event.id}`)
-                .setLabel('Cancel')
+                .setLabel('↩️ Cancel')
                 .setStyle(ButtonStyle.Secondary)
             )
           ),
@@ -326,19 +320,12 @@ function createSpamCatcherManager({ client, configStore }) {
 
   async function handleImmediateBan(guild, event, options = {}) {
     const config = await getConfig(event.guildId).catch(() => ({}));
-    const t = createTranslator(config.language);
     const mode = event.action === 'ban_after_timeout'
       ? 'after_timeout'
       : event.action === 'ban_delayed'
         ? 'delayed'
         : 'immediate';
-    const dmChannel = await createDmChannel(event.userId);
-    const dmPayload = {
-      content: t('moderation.banDm'),
-    };
-    const dmSent = dmChannel
-      ? await dmChannel.send(dmPayload).then(() => true).catch(() => false)
-      : await moderationWorkflow.sendBanDm(event.userId, config);
+    const dmSent = await moderationWorkflow.sendBanDm(event.userId, config);
 
     let banError = null;
     await guild.members.ban(event.userId, {

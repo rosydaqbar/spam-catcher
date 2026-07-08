@@ -98,6 +98,23 @@ function createModerationWorkflow({
     };
   }
 
+  function buildSimpleDmPayload({ title, body, accentColor }) {
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(accentColor)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent([
+              `# ${title}`,
+              body,
+            ].join('\n\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
   async function dmUser(userId, payload) {
     const user = await client.users.fetch(userId).catch(() => null);
     if (!user) return false;
@@ -110,12 +127,20 @@ function createModerationWorkflow({
 
   async function sendBanDm(userId, config = {}) {
     const t = createTranslator(config.language);
-    return dmUser(userId, { content: t('moderation.banDm') });
+    return dmUser(userId, buildSimpleDmPayload({
+      title: t('moderation.banDmTitle'),
+      body: t('moderation.banDm'),
+      accentColor: 0xef4444,
+    }));
   }
 
   async function sendTimeoutRemovedDm({ userId, guildName, config }) {
     const t = createTranslator(config.language);
-    return dmUser(userId, { content: t('moderation.timeoutRemovedDm', { guild: guildName }) });
+    return dmUser(userId, buildSimpleDmPayload({
+      title: t('moderation.timeoutRemovedDmTitle'),
+      body: t('moderation.timeoutRemovedDm', { guild: guildName }),
+      accentColor: 0x22c55e,
+    }));
   }
 
   async function handleAppealButton(interaction) {

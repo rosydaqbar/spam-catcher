@@ -31,6 +31,213 @@ let spamCatcherEventsEnsured = false;
 let spamCatcherNoticeMessagesEnsured = false;
 let automaticSpamDetectionEnsured = false;
 
+const DEFAULT_AI_VISION_TRIGGER_WORDS = [
+  'free nitro',
+  'free discord nitro',
+  'steam gift',
+  'steam gift card',
+  'seed phrase',
+  'recovery phrase',
+  'connect wallet',
+  'connect wallet to claim',
+  'wallet connect reward',
+  'claim reward',
+  'claim your reward',
+  'how to claim your reward receive your $2,500 bonus',
+  'receive your $2500 bonus',
+  'verify wallet',
+  'wallet verification',
+  'validate wallet',
+  'crypto giveaway',
+  'limited reward',
+  'double your money',
+  'guaranteed crypto profit',
+  'crypto signal group',
+  'crypto casino',
+  'cryptocurrency casino',
+  'own cryptocurrency casino',
+  'claim airdrop',
+  'free airdrop reward',
+  'airdrop claim page',
+  'mint claim page',
+  'free mint now',
+  'whitelist spot',
+  'claim free token',
+  'seed phrase required',
+  'recovery phrase required',
+  'private key required',
+  'vyro project',
+  'vyro',
+  'giving away $2,500',
+  'giving away $2500',
+  '$2,500 to everyone',
+  '$2500 to everyone',
+  'everyone who registers',
+  'everyone who registers bonus',
+  'withdraw the bonus immediately',
+  'bonus immediately',
+  'this post will be deleted',
+  'deleted an hour after publication',
+  'only the fastest people',
+  'promotion will last',
+  "don't miss your chance",
+  'dont miss your chance',
+  'launch new rates',
+  'kasowin advertising',
+  'activate code for bonus',
+  'activate promo code',
+  'exclusive reward',
+  'offer is limited',
+  'withdrawal success',
+  'withdrawal success USDC',
+  'withdrawal of $2700',
+  'withdrawal of $2,700',
+  'withdrawal of $2,700 receive your $2,500 bonus',
+  'mrbeast casino',
+  'mr beast casino',
+  'beast casino',
+  'mrbeast slots',
+  'mrbeast jackpot',
+  'mrbeast reward',
+  'mrbeast giveaway',
+  'beast rewards',
+  'mrbeast kasowin',
+  'mrbeast promo code',
+  'mrbeast crypto giveaway',
+  'mrbeast free money',
+  'mrbeast $2500',
+  'kasowin bonus',
+  'kasowin withdraw',
+  'crypto casino bonus',
+  'promo code withdraw',
+  'deleted an hour bonus',
+  '@everyone free nitro',
+  '@here free nitro',
+  '@everyone casino',
+  '@here casino',
+  '@everyone you won',
+  '@here you won',
+  '@everyone claim nitro',
+  '@here claim nitro',
+  '@everyone scan qr',
+  '@here scan qr',
+  'discord nitro free',
+  'nitro gift link',
+  'claim nitro gift',
+  'redeem nitro gift',
+  'nitro giveaway link',
+  'nitro boost reward',
+  'free server boost',
+  'steam nitro gift',
+  'discord gift redeem',
+  'scan to claim nitro',
+  'scan to verify discord',
+  'scan qr to claim',
+  'scan qr to verify',
+  'qr nitro gift',
+  'qr discord login',
+  'discord qr login',
+  'mobile login qr',
+  'login to verify discord',
+  'verify your discord account',
+  'verify discord to access',
+  'server verification required',
+  'anti raid verification required',
+  'age verification required',
+  'verify or get kicked',
+  'verify before ban',
+  'connect discord account',
+  'link your discord account',
+  'accidentally reported you',
+  'i reported you by mistake',
+  'false report on your account',
+  'mistaken report on your account',
+  'your account is under investigation',
+  'your account will be banned',
+  'contact discord admin',
+  'contact discord staff',
+  'message this discord admin',
+  'ban appeal required',
+  'tos violation warning',
+  'account suspension warning',
+  'test my game',
+  'try my game',
+  'download my game',
+  'game beta test',
+  'private game build',
+  'new game launcher',
+  'download this game build',
+  'can you test my game',
+  'nitro generator',
+  'free nitro generator',
+  'discord token grabber',
+  'token grabber',
+  'paste this in console',
+  'open developer console',
+  'copy this script',
+  'run this script',
+  'paste code here',
+  'inspect element discord',
+  'local storage token',
+  'discord token',
+  'auth token',
+  'session token',
+  'authorize this bot',
+  'authorize bot admin',
+  'give bot admin',
+  'administrator permission required',
+  'manage server permission',
+  'manage roles permission',
+  'manage webhooks permission',
+  'add verification bot',
+  'add security bot',
+  'anti raid bot required',
+  'free moderation bot',
+  'official nitro announcement',
+  'official giveaway announcement',
+  'server reward announcement',
+  'discord security update',
+  'urgent security update',
+  'free reward announcement',
+  'limited reward announcement',
+  'fake server announcement',
+  'webhook announcement',
+  'free onlyfans leak',
+  'leaked nudes',
+  'nude leak',
+  'private video leak',
+  'your photos leaked',
+  'i have your nudes',
+  'i will leak your photos',
+  'pay or leak',
+  'send money or leak',
+  'expose your photos',
+  'webcam recording proof',
+  'doxx your family',
+  'trusted middleman',
+  'fake middleman',
+  'escrow server',
+  'send first trade',
+  'trade first',
+  'fake payment proof',
+  'cheap discord account',
+  'buy discord account',
+  'sell discord account',
+  'lifetime nitro',
+  'cheap nitro seller',
+  'gift card payment',
+  'steam card payment',
+  'paid moderator job',
+  'discord mod job',
+  'staff application reward',
+  'fake partnership offer',
+  'server partnership offer',
+  'sponsorship offer discord',
+  'brand deal discord',
+  'paid collab offer',
+  'easy remote job discord',
+];
+
 const DEFAULT_SPAM_CATCHER_CONFIG = {
   enabled: false,
   channelIds: [],
@@ -47,6 +254,9 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   attachmentSpamThreshold: 2,
   attachmentSpamWindowSeconds: 600,
   attachmentSpamTimeoutMinutes: 40_320,
+  aiVisionSpamCheckEnabled: false,
+  aiVisionConfidenceThreshold: 0.7,
+  aiVisionTriggerWords: DEFAULT_AI_VISION_TRIGGER_WORDS,
   language: DEFAULT_LANGUAGE,
 };
 
@@ -118,6 +328,7 @@ function normalizeSpamCatcherConfig(value) {
   const attachmentSpamThreshold = Number(source.attachmentSpamThreshold);
   const attachmentSpamWindowSeconds = Number(source.attachmentSpamWindowSeconds);
   const attachmentSpamTimeoutMinutes = Number(source.attachmentSpamTimeoutMinutes);
+  const aiVisionConfidenceThreshold = Number(source.aiVisionConfidenceThreshold);
   const webhookUrls = Array.isArray(source.webhookUrls)
     ? source.webhookUrls
       .filter((item) => item && typeof item === 'object')
@@ -179,8 +390,27 @@ function normalizeSpamCatcherConfig(value) {
     attachmentSpamTimeoutMinutes: Number.isFinite(attachmentSpamTimeoutMinutes)
       ? Math.max(1, Math.min(40_320, Math.floor(attachmentSpamTimeoutMinutes)))
       : DEFAULT_SPAM_CATCHER_CONFIG.attachmentSpamTimeoutMinutes,
+    aiVisionSpamCheckEnabled: source.aiVisionSpamCheckEnabled === true,
+    aiVisionConfidenceThreshold: Number.isFinite(aiVisionConfidenceThreshold)
+      ? Math.max(0, Math.min(1, aiVisionConfidenceThreshold))
+      : DEFAULT_SPAM_CATCHER_CONFIG.aiVisionConfidenceThreshold,
+    aiVisionTriggerWords: normalizeAiVisionTriggerWords(source.aiVisionTriggerWords),
     language: normalizeLanguage(source.language),
   };
+}
+
+function normalizeAiVisionTriggerWords(value) {
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/[\n,]/)
+      : DEFAULT_AI_VISION_TRIGGER_WORDS;
+  const normalized = items
+    .filter((item) => typeof item === 'string')
+    .map((item) => item.trim().toLowerCase().replace(/\s+/g, ' '))
+    .filter((item) => item.length > 0 && item.length <= 100);
+  const unique = [...new Set(normalized)].slice(0, 100);
+  return unique.length > 0 ? unique : [...DEFAULT_AI_VISION_TRIGGER_WORDS];
 }
 
 async function ensureSpamCatcherConfigTable() {
@@ -212,6 +442,15 @@ async function ensureSpamCatcherEventsTable() {
         timeout_until TIMESTAMPTZ,
         ban_after TIMESTAMPTZ,
         appeal_message TEXT,
+        ai_vision_status TEXT,
+        ai_vision_model TEXT,
+        ai_vision_image_url TEXT,
+        ai_vision_confidence DOUBLE PRECISION,
+        ai_vision_caption TEXT,
+        ai_vision_ocr_text TEXT,
+        ai_vision_matched_words_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ai_vision_error TEXT,
+        ai_vision_checked_at TIMESTAMPTZ,
         review_channel_id TEXT,
         review_message_id TEXT,
         decided_by TEXT,
@@ -226,6 +465,9 @@ async function ensureSpamCatcherEventsTable() {
   );
   await query(
     'CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_ban_due ON spam_catcher_events(status, ban_after)'
+  );
+  await query(
+    'CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_user ON spam_catcher_events(guild_id, user_id, created_at DESC)'
   );
   spamCatcherEventsEnsured = true;
 }
@@ -300,6 +542,33 @@ async function ensureAutomaticSpamDetectionTables() {
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS appeal_message TEXT'
   );
   await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_status TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_model TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_image_url TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_confidence DOUBLE PRECISION'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_caption TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_ocr_text TEXT'
+  );
+  await query(
+    "ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_matched_words_json JSONB NOT NULL DEFAULT '[]'::jsonb"
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_error TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_checked_at TIMESTAMPTZ'
+  );
+  await query(
     'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created ON automatic_spam_detection_events(guild_id, user_id, created_at DESC)'
   );
   await query(
@@ -341,6 +610,19 @@ function mapAutomaticSpamDetectionEvent(row) {
     timeoutError: row.timeout_error || null,
     status: row.status || 'danger',
     appealMessage: row.appeal_message || null,
+    aiVisionStatus: row.ai_vision_status || null,
+    aiVisionModel: row.ai_vision_model || null,
+    aiVisionImageUrl: row.ai_vision_image_url || null,
+    aiVisionConfidence: row.ai_vision_confidence === null || row.ai_vision_confidence === undefined
+      ? null
+      : Number(row.ai_vision_confidence),
+    aiVisionCaption: row.ai_vision_caption || null,
+    aiVisionOcrText: row.ai_vision_ocr_text || null,
+    aiVisionMatchedWords: Array.isArray(row.ai_vision_matched_words_json)
+      ? row.ai_vision_matched_words_json
+      : parseJson(row.ai_vision_matched_words_json) || [],
+    aiVisionError: row.ai_vision_error || null,
+    aiVisionCheckedAt: row.ai_vision_checked_at ? new Date(row.ai_vision_checked_at) : null,
     reviewChannelId: row.review_channel_id || null,
     reviewMessageId: row.review_message_id || null,
     decidedBy: row.decided_by || null,
@@ -540,6 +822,36 @@ async function getDueSpamCatcherBanEvents(limit = 25) {
   return res.rows.map(mapSpamCatcherEvent);
 }
 
+async function getSpamCatcherEventsByUser(guildId, userId, limit = 5) {
+  await ensureSpamCatcherEventsTable();
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const res = await query(
+    `
+      SELECT * FROM spam_catcher_events
+      WHERE guild_id = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3
+    `,
+    [guildId, userId, safeLimit]
+  );
+  return res.rows.map(mapSpamCatcherEvent);
+}
+
+async function getAutomaticSpamDetectionEventsByUser(guildId, userId, limit = 5) {
+  await ensureAutomaticSpamDetectionTables();
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const res = await query(
+    `
+      SELECT * FROM automatic_spam_detection_events
+      WHERE guild_id = $1 AND user_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3
+    `,
+    [guildId, userId, safeLimit]
+  );
+  return res.rows.map(mapAutomaticSpamDetectionEvent);
+}
+
 async function getSpamCatcherCaughtCount(guildId, channelId) {
   await ensureSpamCatcherEventsTable();
   const res = await query(
@@ -683,6 +995,16 @@ async function createAutomaticSpamDetectionEvent({
   channels,
   windowStartedAt,
   windowExpiresAt,
+  status,
+  aiVisionStatus,
+  aiVisionModel,
+  aiVisionImageUrl,
+  aiVisionConfidence,
+  aiVisionCaption,
+  aiVisionOcrText,
+  aiVisionMatchedWords,
+  aiVisionError,
+  aiVisionCheckedAt,
 }) {
   await ensureAutomaticSpamDetectionTables();
   const res = await query(
@@ -690,9 +1012,12 @@ async function createAutomaticSpamDetectionEvent({
       INSERT INTO automatic_spam_detection_events (
         guild_id, user_id, source_channel_id, source_message_id,
         attachment_count, reason, channels_json, window_started_at,
-        window_expires_at, updated_at
+        window_expires_at, status, ai_vision_status, ai_vision_model,
+        ai_vision_image_url, ai_vision_confidence, ai_vision_caption,
+        ai_vision_ocr_text, ai_vision_matched_words_json, ai_vision_error,
+        ai_vision_checked_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, NOW())
       RETURNING *
     `,
     [
@@ -705,6 +1030,16 @@ async function createAutomaticSpamDetectionEvent({
       JSON.stringify(Array.isArray(channels) ? channels : []),
       windowStartedAt,
       windowExpiresAt,
+      status || 'danger',
+      aiVisionStatus || null,
+      aiVisionModel || null,
+      aiVisionImageUrl || null,
+      aiVisionConfidence === null || aiVisionConfidence === undefined ? null : Number(aiVisionConfidence),
+      aiVisionCaption || null,
+      aiVisionOcrText || null,
+      JSON.stringify(Array.isArray(aiVisionMatchedWords) ? aiVisionMatchedWords : []),
+      aiVisionError || null,
+      aiVisionCheckedAt || null,
     ]
   );
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
@@ -801,6 +1136,7 @@ module.exports = {
   updateSpamCatcherReviewMessage,
   resolveSpamCatcherAppeal,
   getDueSpamCatcherBanEvents,
+  getSpamCatcherEventsByUser,
   getSpamCatcherCaughtCount,
   getSpamCatcherNoticeMessage,
   saveSpamCatcherNoticeMessages,
@@ -810,6 +1146,7 @@ module.exports = {
   getAutomaticSpamDetectionUser,
   createAutomaticSpamDetectionEvent,
   getAutomaticSpamDetectionEventById,
+  getAutomaticSpamDetectionEventsByUser,
   updateAutomaticSpamDetectionTimeout,
   updateAutomaticSpamDetectionReviewMessage,
   updateAutomaticSpamDetectionDecision,

@@ -99,12 +99,20 @@ Do not expose PostgreSQL publicly. Keep it on `127.0.0.1` or private network.
 PG_SSL_MODE=disable
 BOT_POSTGRES_POOL_MAX=2
 ALLOWED_GUILD_IDS=
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=xiaomi/mimo-v2.5
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
 DEBUG=false
 ```
 
 - `PG_SSL_MODE`: use `disable` for local/VPS PostgreSQL on `127.0.0.1`; defaults to SSL-required behavior otherwise.
 - `BOT_POSTGRES_POOL_MAX`: defaults to `2`.
 - `ALLOWED_GUILD_IDS`: comma-separated allowlist; empty means any guild can work if it has enabled database config.
+- `OPENROUTER_API_KEY`: optional; preferred provider when a guild enables AI Verdict Checker.
+- `OPENROUTER_MODEL`: optional; defaults to `xiaomi/mimo-v2.5`.
+- `GEMINI_API_KEY`: optional fallback for AI Verdict Checker when OpenRouter is not configured.
+- `GEMINI_MODEL`: optional fallback model; defaults to `gemini-2.5-flash`.
 - `DEBUG`: currently optional runtime flag.
 
 On startup, the bot:
@@ -138,6 +146,7 @@ The setup dashboard uses Discord Component V2 and has summary containers. Button
 - `Channels / Timeout Summary`: trap channels, review channel, log channel, timeout duration
 - `Auto Ban Summary`: optional Auto Ban state and ban timing
 - `Automatic Spam Detection Summary`: attachment-spam detector state and action
+- `AI Verdict Checker`: optional Automatic Detection add-on using OpenRouter/Gemini image analysis and configured trigger patterns
 - `Trap Notices Summary`: optional notice posting status
 - Optional language setting is stored per guild and used for setup UI, trap notices, Automatic Detection Danger cards, timeout DMs, appeal modals, and shared moderation messages.
 
@@ -201,6 +210,18 @@ Danger action:
 - times out the user for `28 days`
 - sends a Component V2 Danger card to the configured log channel
 - DMs the user with the shared timeout/appeal workflow when DMs are available
+
+Optional AI Verdict Checker:
+
+- Applies only to Automatic Spam Detection, never trap-channel Spam Catcher.
+- Requires `OPENROUTER_API_KEY` or `GEMINI_API_KEY` and must be enabled in the Automatic Detection setup panel.
+- OpenRouter is preferred by default with model `xiaomi/mimo-v2.5`.
+- Analyzes only the first supported image attachment from the trigger message.
+- AI provider returns caption, OCR text, and confidence; the bot decides scam by matching configured trigger words.
+- Default confidence threshold is `0.7`.
+- If confidence is below threshold, no timeout is applied and admins get a warning card.
+- If AI analysis fails, no timeout is applied and admins get a warning card.
+- If no trigger words match, no timeout is applied and the result is logged only.
 
 Automatic Detection appeals:
 

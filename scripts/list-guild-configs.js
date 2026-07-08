@@ -24,6 +24,8 @@ function summarize(row) {
     reviewChannelId: row.config.reviewChannelId,
     banMode: row.config.banMode,
     automaticSpamDetectionEnabled: row.config.automaticSpamDetectionEnabled,
+    aiVisionSpamCheckEnabled: row.config.aiVisionSpamCheckEnabled,
+    aiVisionTriggerWordCount: row.config.aiVisionTriggerWords.length,
     language: row.config.language,
     webhookEnabled: row.config.webhookEnabled,
     webhookCount: row.config.webhookUrls.length,

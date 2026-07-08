@@ -12,7 +12,20 @@ const {
   SectionBuilder,
   TextDisplayBuilder,
 } = require('@discordjs/builders');
-const { parseAllowedGuildIds } = require('./env');
+const {
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
+  OPENROUTER_API_KEY,
+  OPENROUTER_MODEL,
+  parseAllowedGuildIds,
+} = require('./env');
+const {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
+  createAiVisionChecker,
+  decideScamFromVision,
+  firstSupportedImageAttachment,
+} = require('./ai-vision-checker');
 const { createTranslator } = require('./i18n');
 const { createModerationWorkflow } = require('./moderation-workflow');
 const { createLogger } = require('../lib/logger');
@@ -21,6 +34,8 @@ const BAN_PREFIX = 'autospam_ban';
 const REMOVE_TIMEOUT_PREFIX = 'autospam_remove_timeout';
 const CONFIG_CACHE_TTL_MS = 5000;
 const DISCORD_TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
+const AI_VISION_CAPTION_MAX_LENGTH = 220;
+const AI_VISION_OCR_MAX_LENGTH = 350;
 
 function createAutomaticSpamDetectionManager({ client, configStore }) {
   const allowedGuildIds = parseAllowedGuildIds();
@@ -28,6 +43,12 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   const attachmentSessionByAuthor = new Map();
   const messageQueueByAuthor = new Map();
   const logger = createLogger('automatic-spam-detection');
+  const visionChecker = createAiVisionChecker({
+    openRouterApiKey: OPENROUTER_API_KEY,
+    openRouterModel: OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+    geminiApiKey: GEMINI_API_KEY,
+    geminiModel: GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+  });
 
   function isGuildAllowed(guildId) {
     if (!guildId) return false;
@@ -77,7 +98,18 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     if (event.status === 'user_unavailable') return t('automatic.statusUserUnavailable', { userId: event.decidedBy });
     if (event.status === 'ban_failed') return t('automatic.statusBanFailed', { error: event.decisionError || 'unknown error' });
     if (event.status === 'timeout_remove_failed') return t('automatic.statusTimeoutRemoveFailed', { error: event.decisionError || 'unknown error' });
+    if (event.status === 'ai_analysis_failed') return t('automatic.statusAiAnalysisFailed');
+    if (event.status === 'ai_low_confidence') return t('automatic.statusAiLowConfidence');
+    if (event.status === 'ai_no_match') return t('automatic.statusAiNoMatch');
     return t('automatic.statusWaiting');
+  }
+
+  function aiVisionStatusText(event, t) {
+    if (event.aiVisionStatus === 'matched') return t('automatic.aiVisionScamMatched');
+    if (event.aiVisionStatus === 'no_match') return t('automatic.aiVisionNoMatch');
+    if (event.aiVisionStatus === 'low_confidence') return t('automatic.aiVisionLowConfidence');
+    if (event.aiVisionStatus === 'failed') return t('automatic.aiVisionFailed');
+    return event.aiVisionStatus || t('automatic.notAvailable');
   }
 
   function spammerStateText(userState, t) {
@@ -108,6 +140,30 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       );
   }
 
+  function truncateText(value, maxLength = 700) {
+    const text = String(value || '').trim();
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength - 1)}…`;
+  }
+
+  function aiVisionLines(event, t) {
+    if (!event.aiVisionStatus) return null;
+    return [
+      `### ${t('automatic.aiVisionFinding')}`,
+      `**${t('automatic.aiVisionVerdict')}:** \`${aiVisionStatusText(event, t)}\``,
+      event.aiVisionConfidence === null || event.aiVisionConfidence === undefined
+        ? null
+        : `**${t('automatic.aiVisionConfidence')}:** \`${Math.round(event.aiVisionConfidence * 100)}%\``,
+      event.aiVisionCaption ? `**${t('automatic.aiVisionCaption')}:** \`${truncateText(event.aiVisionCaption, AI_VISION_CAPTION_MAX_LENGTH)}\`` : null,
+      event.aiVisionOcrText ? `**${t('automatic.aiVisionOcrText')}:** \`${truncateText(event.aiVisionOcrText, AI_VISION_OCR_MAX_LENGTH)}\`` : null,
+      event.aiVisionMatchedWords?.length
+        ? `**${t('automatic.aiVisionMatchedWords')}:** ${event.aiVisionMatchedWords.map((word) => `\`${word}\``).join(', ')}`
+        : null,
+
+      event.aiVisionError ? `**${t('automatic.aiVisionError')}:** \`${truncateText(event.aiVisionError, 250)}\`` : null,
+    ].filter(Boolean);
+  }
+
   function buildDangerPayload(event, userState, config = {}) {
     const t = createTranslator(config.language);
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
@@ -115,13 +171,13 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     const channelList = event.channels.length > 0
       ? event.channels.map((channelId) => `<#${channelId}>`).join(', ')
       : `<#${event.sourceChannelId}>`;
-    const timeoutLine = event.timeoutStatus === 'applied'
-      ? `${t('automatic.timeout')}: **${t('automatic.timeoutApplied')}** ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
+      const timeoutLine = event.timeoutStatus === 'applied'
+      ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutApplied')}\` ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'already_active'
-        ? `${t('automatic.timeout')}: **${t('automatic.timeoutAlreadyActive')}** ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
+        ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutAlreadyActive')}\` ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'failed'
-        ? `${t('automatic.timeout')}: **${t('automatic.timeoutFailed')}** (${event.timeoutError || 'unknown error'})`
-        : `${t('automatic.timeout')}: **${t('automatic.timeoutPending')}**`;
+        ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutFailed')}\` (\`${event.timeoutError || 'unknown error'}\`)`
+        : `**${t('automatic.timeout')}:** \`${t('automatic.timeoutPending')}\``;
 
     const container = new ContainerBuilder()
       .setAccentColor(eventAccentColor(event))
@@ -134,30 +190,39 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
         `### ${t('automatic.incident')}`,
-        `${t('automatic.user')}: <@${event.userId}> (\`${event.userId}\`)`,
-        `${t('automatic.reason')}: **${reasonText(event.reason, t)}**`,
+        `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`,
+        `**${t('automatic.reason')}:** \`${reasonText(event.reason, t)}\``,
       ].join('\n'), t('automatic.openMessage'), messageUrl))
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
         `### ${t('automatic.evidence')}`,
-        `${t('automatic.sourceChannel')}: <#${event.sourceChannelId}>`,
-        `${t('automatic.attachmentsOnTrigger')}: \`${event.attachmentCount}\``,
-        `${t('automatic.channelsInWindow')}: ${channelList}`,
+        `**${t('automatic.sourceChannel')}:** <#${event.sourceChannelId}>`,
+        `**${t('automatic.attachmentsOnTrigger')}:** \`${event.attachmentCount}\``,
+        `**${t('automatic.channelsInWindow')}:** ${channelList}`,
       ].join('\n'), t('automatic.openChannel'), channelUrl))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `### ${t('automatic.window')}`,
           `${timestamp(event.windowStartedAt, 'T')} - ${timestamp(event.windowExpiresAt, 'T')}`,
         ].join('\n'))
-      )
+      );
+
+    const aiLines = aiVisionLines(event, t);
+    if (aiLines) {
+      container
+        .addSeparatorComponents(divider())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(aiLines.join('\n')));
+    }
+
+    container
       .addSeparatorComponents(divider())
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `### ${t('automatic.moderationState')}`,
-          `${t('automatic.spammerState')}: **${spammerStateText(userState, t)}**`,
-          `${t('automatic.spammerCount')}: \`${userState?.spammerCount || 0}\``,
+          `**${t('automatic.spammerState')}:** \`${spammerStateText(userState, t)}\``,
+          `**${t('automatic.spammerCount')}:** \`${userState?.spammerCount || 0}\``,
           timeoutLine,
-          `${t('automatic.status')}: **${statusText(event, t)}**`,
+          `**${t('automatic.status')}:** ${statusText(event, t)}`,
         ].filter(Boolean).join('\n'))
       );
 
@@ -284,6 +349,66 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return configStore.updateAutomaticSpamDetectionReviewMessage(event.id, logChannel.id, message.id).catch(() => event);
   }
 
+  function buildAiVisionWarningPayload(event, config = {}) {
+    const t = createTranslator(config.language);
+    const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
+    const container = new ContainerBuilder()
+      .setAccentColor(0xf59e0b)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `# ${t('automatic.aiVisionWarningTitle')}`,
+          `-# ${t('automatic.eventId')}: \`${event.id}\``,
+        ].join('\n'))
+      )
+      .addSeparatorComponents(divider())
+      .addSectionComponents(sectionWithLink([
+        `### ${t('automatic.incident')}`,
+        `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`,
+        `**${t('automatic.triggerMessage')}:** ${messageUrl}`,
+        `**${t('automatic.attachmentsOnTrigger')}:** \`${event.attachmentCount}\``,
+      ].join('\n'), t('automatic.openMessage'), messageUrl));
+
+    const lines = aiVisionLines(event, t);
+    if (lines) {
+      container
+        .addSeparatorComponents(divider())
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join('\n')));
+    }
+
+    container
+      .addSeparatorComponents(divider())
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`-# ${t('automatic.aiVisionNoTimeout')}`)
+      );
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [container],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function sendAiVisionWarningMessage(guild, config, event) {
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) {
+      logger.warn('AI Verdict warning has no log channel', {
+        guildId: guild.id,
+        eventId: event.id,
+      });
+      return null;
+    }
+    const message = await logChannel.send(buildAiVisionWarningPayload(event, config)).catch((error) => {
+      logger.error('Failed to send AI Verdict warning card', {
+        guildId: guild.id,
+        eventId: event.id,
+        error: safeError(error),
+      });
+      return null;
+    });
+    if (!message) return null;
+    return configStore.updateAutomaticSpamDetectionReviewMessage(event.id, logChannel.id, message.id).catch(() => event);
+  }
+
   async function sendOrUpdateDangerMessage(event) {
     if (!event?.reviewChannelId || !event.reviewMessageId) return null;
     const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
@@ -331,16 +456,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     });
   }
 
-  async function handleDanger({ message, member, config, danger }) {
-    let userState = await configStore.markAutomaticSpamDetectionDangerUser({
-      guildId: message.guild.id,
-      userId: message.author.id,
-      channelId: message.channelId,
-      messageId: message.id,
-      dangerAt: message.createdAt || new Date(),
-    });
-
-    let event = await configStore.createAutomaticSpamDetectionEvent({
+  async function createDetectionEvent({ message, danger, status = 'danger', aiVision = {} }) {
+    return configStore.createAutomaticSpamDetectionEvent({
       guildId: message.guild.id,
       userId: message.author.id,
       sourceChannelId: message.channelId,
@@ -350,7 +467,21 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       channels: danger.channels,
       windowStartedAt: danger.windowStartedAt,
       windowExpiresAt: danger.windowExpiresAt,
+      status,
+      ...aiVision,
     });
+  }
+
+  async function handleConfirmedDanger({ message, member, config, danger, aiVision = {} }) {
+    let userState = await configStore.markAutomaticSpamDetectionDangerUser({
+      guildId: message.guild.id,
+      userId: message.author.id,
+      channelId: message.channelId,
+      messageId: message.id,
+      dangerAt: message.createdAt || new Date(),
+    });
+
+    let event = await createDetectionEvent({ message, danger, status: 'danger', aiVision });
 
     const timeoutResult = await timeoutUser(message.guild, member, event, config);
     event = await configStore.updateAutomaticSpamDetectionTimeout(event.id, timeoutResult).catch(() => ({
@@ -369,6 +500,141 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       eventId: event.id,
       timeoutStatus: event.timeoutStatus,
     });
+  }
+
+  async function handleAiVisionDanger({ message, member, config, danger }) {
+    const checkedAt = new Date();
+    const image = firstSupportedImageAttachment(message.attachments);
+    const model = visionChecker?.model || OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+
+    if (!visionChecker) {
+      const event = await createDetectionEvent({
+        message,
+        danger,
+        status: 'ai_analysis_failed',
+        aiVision: {
+          aiVisionStatus: 'failed',
+          aiVisionModel: model,
+          aiVisionError: 'OPENROUTER_API_KEY or GEMINI_API_KEY is not configured.',
+          aiVisionCheckedAt: checkedAt,
+        },
+      });
+      await sendAiVisionWarningMessage(message.guild, config, event);
+      return;
+    }
+
+    if (!image) {
+      const event = await createDetectionEvent({
+        message,
+        danger,
+        status: 'ai_analysis_failed',
+        aiVision: {
+          aiVisionStatus: 'failed',
+          aiVisionModel: model,
+          aiVisionError: 'No supported image attachment found on trigger message.',
+          aiVisionCheckedAt: checkedAt,
+        },
+      });
+      await sendAiVisionWarningMessage(message.guild, config, event);
+      return;
+    }
+
+    let vision;
+    try {
+      vision = await visionChecker.analyzeAttachment(image, {
+        triggerWords: config.aiVisionTriggerWords,
+      });
+    } catch (error) {
+      logger.warn('AI Verdict image analysis failed', {
+        guildId: message.guild.id,
+        channelId: message.channelId,
+        userId: message.author.id,
+        messageId: message.id,
+        imageUrl: image.url,
+        model,
+        error: safeError(error),
+        rawAiResponse: error?.rawAiResponse || null,
+        cleanedAiResponse: error?.cleanedAiResponse || null,
+        firstRawAiResponse: error?.firstRawAiResponse || null,
+        firstCleanedAiResponse: error?.firstCleanedAiResponse || null,
+      });
+      const event = await createDetectionEvent({
+        message,
+        danger,
+        status: 'ai_analysis_failed',
+        aiVision: {
+          aiVisionStatus: 'failed',
+          aiVisionModel: model,
+          aiVisionImageUrl: image.url,
+          aiVisionError: safeError(error),
+          aiVisionCheckedAt: checkedAt,
+        },
+      });
+      await sendAiVisionWarningMessage(message.guild, config, event);
+      return;
+    }
+
+    const decision = decideScamFromVision(
+      vision,
+      config.aiVisionTriggerWords,
+      config.aiVisionConfidenceThreshold
+    );
+    const baseAiVision = {
+      aiVisionModel: vision.model || model,
+      aiVisionImageUrl: vision.imageUrl || image.url,
+      aiVisionConfidence: decision.confidence,
+      aiVisionCaption: vision.caption,
+      aiVisionOcrText: vision.ocrText,
+      aiVisionMatchedWords: decision.matchedWords,
+      aiVisionCheckedAt: checkedAt,
+    };
+
+    if (decision.isScam) {
+      await handleConfirmedDanger({
+        message,
+        member,
+        config,
+        danger,
+        aiVision: {
+          ...baseAiVision,
+          aiVisionStatus: 'matched',
+        },
+      });
+      return;
+    }
+
+    const status = decision.hasEnoughConfidence ? 'ai_no_match' : 'ai_low_confidence';
+    const aiVisionStatus = decision.hasEnoughConfidence ? 'no_match' : 'low_confidence';
+    const event = await createDetectionEvent({
+      message,
+      danger,
+      status,
+      aiVision: {
+        ...baseAiVision,
+        aiVisionStatus,
+      },
+    });
+
+    if (!decision.hasEnoughConfidence) {
+      await sendAiVisionWarningMessage(message.guild, config, event);
+      return;
+    }
+
+    logger.info('AI Verdict checked trigger message and found no scam keywords', {
+      guildId: message.guild.id,
+      channelId: message.channelId,
+      userId: message.author.id,
+      eventId: event.id,
+      confidence: decision.confidence,
+    });
+  }
+
+  async function handleDanger({ message, member, config, danger }) {
+    if (config.aiVisionSpamCheckEnabled) {
+      await handleAiVisionDanger({ message, member, config, danger });
+      return;
+    }
+    await handleConfirmedDanger({ message, member, config, danger });
   }
 
   async function handleQueuedMessage(message) {

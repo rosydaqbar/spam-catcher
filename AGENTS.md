@@ -4,7 +4,8 @@
 - Install deps with `npm install`.
 - Run the only repo verification with `npm run check`; it is syntax-only via `node --check`, not tests.
 - Start the bot with `npm start`; runtime requires `.env` with `DISCORD_TOKEN` and `DATABASE_URL`.
-- CLI helpers require runtime env because they call `requireRuntimeEnv()`: `npm run config:list`, `npm run config:upsert`, `npm run post:notices`.
+- CLI helpers require runtime env because they call `requireRuntimeEnv()`: `npm run config:list`, `npm run config:upsert`, `npm run post:notices`, `npm run deploy:commands`.
+- `/spam-catcher check <user>` subcommand shows user spam status (auto-detection + trap events); accepts `@mention` or raw ID.
 
 ## Runtime Shape
 - Entry point is `src/index.js`; it wires one Discord client to setup commands, Automatic Spam Detection, and trap-channel Spam Catcher.
@@ -14,7 +15,7 @@
 
 ## Config And Database
 - Guild settings live in PostgreSQL `spam_catcher_config.config_json`, not `.env`; unknown guilds are disabled by default.
-- `.env` is only runtime connection/allowlist config: token, database URL, SSL mode, pool size, `ALLOWED_GUILD_IDS`.
+- `.env` is only runtime connection/allowlist/API-key config: token, database URL, SSL mode, pool size, `ALLOWED_GUILD_IDS`, optional `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL`, optional `GEMINI_API_KEY`, optional `GEMINI_MODEL`.
 - Tables auto-create at runtime in `src/config-store.js`; update `scripts/schema-postgres.sql` too when changing schema.
 - Local/VPS PostgreSQL should use `PG_SSL_MODE=disable` and bind to `127.0.0.1`; see `setup.md` for safe setup.
 
@@ -29,3 +30,4 @@
 - Timeout removal should call `member.timeout(null, ...)` whenever the member exists; do not gate it on `communicationDisabledUntilTimestamp`, which can be stale/missing.
 - Missing users are expected for leave/kick/ban cases; handle failed member fetches without crashing and update the review/Danger card.
 - Automatic Detection and trap flow should share moderation workflow behavior, not maintain separate appeal/DM implementations.
+- AI Verdict Checker applies only to Automatic Detection, analyzes only the first supported image attachment, uses OpenRouter by default (`xiaomi/mimo-v2.5`) with Gemini fallback, and must not timeout when AI analysis fails.

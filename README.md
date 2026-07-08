@@ -17,7 +17,9 @@ Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by def
 
 `Moderate Members` is required for timeout and timeout removal. `Message Content Intent` is required so Discord includes message attachment data.
 
-## Ready To Run
+**Privacy note:** Spam Catcher does not read or analyze message text. Automatic Spam Detection only uses message metadata needed for moderation, such as author, channel, attachment count, attachment image URL for optional AI Verdict, and timestamps.
+
+## Quick Start
 
 Install and create `.env`:
 
@@ -79,6 +81,7 @@ Required tables:
 - `spam_catcher_notice_messages`
 - `automatic_spam_detection_users`
 - `automatic_spam_detection_events`
+- `automatic_spam_detection_ai_usage`
 
 For VPS/local PostgreSQL setup, read `setup.md`.
 
@@ -103,6 +106,7 @@ OPENROUTER_API_KEY=
 OPENROUTER_MODEL=xiaomi/mimo-v2.5
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
+AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS=
 DEBUG=false
 ```
 
@@ -113,6 +117,7 @@ DEBUG=false
 - `OPENROUTER_MODEL`: optional; defaults to `xiaomi/mimo-v2.5`.
 - `GEMINI_API_KEY`: optional fallback for AI Verdict Checker when OpenRouter is not configured.
 - `GEMINI_MODEL`: optional fallback model; defaults to `gemini-2.5-flash`.
+- `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS`: optional comma-separated guild IDs that bypass only the AI Verdict daily limit.
 - `DEBUG`: currently optional runtime flag.
 
 On startup, the bot:
@@ -219,8 +224,15 @@ Optional AI Verdict Checker:
 - Analyzes only the first supported image attachment from the trigger message.
 - AI provider returns caption, OCR text, and confidence; the bot decides scam by matching configured trigger words.
 - Default confidence threshold is `0.7`.
+- Default daily AI Verdict limit is `3` verdicts per guild per day.
+- Daily AI Verdict usage resets by the guild config timezone, default `UTC`.
+- `/spam-catcher setup` shows current AI Verdict quota information under Automatic Spam Detection.
+- On the first quota-counted AI Verdict trigger after a guild-local daily reset, the bot sends a reset notice to the configured log channel.
+- AI Verdict calls run through a per-guild queue with up to `2` concurrent image analyses.
 - If confidence is below threshold, no timeout is applied and admins get a warning card.
 - If AI analysis fails, no timeout is applied and admins get a warning card.
+- If the daily AI Verdict limit is reached, no AI API call is made, no timeout is applied, and admins get a warning card.
+- Guild IDs in `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS` skip only the daily quota check; AI queueing and all moderation rules still apply.
 - If no trigger words match, no timeout is applied and the result is logged only.
 
 Automatic Detection appeals:
@@ -274,10 +286,13 @@ npm run config:upsert -- \
   --auto-ban false \
   --ban-mode delayed \
   --ban-delay-minutes 10 \
-  --language en
+  --language en \
+  --timezone UTC \
+  --ai-vision-daily-limit 3
 ```
 
 Supported language values are `en` and `id`.
+Timezone should be an IANA timezone such as `UTC`, `Asia/Jakarta`, or `America/New_York`.
 
 List configs:
 

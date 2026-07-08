@@ -17,6 +17,7 @@ const {
   GEMINI_MODEL,
   OPENROUTER_API_KEY,
   OPENROUTER_MODEL,
+  parseAiVisionDailyLimitBypassGuildIds,
   parseAllowedGuildIds,
 } = require('./env');
 const {
@@ -36,12 +37,15 @@ const CONFIG_CACHE_TTL_MS = 5000;
 const DISCORD_TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
 const AI_VISION_CAPTION_MAX_LENGTH = 220;
 const AI_VISION_OCR_MAX_LENGTH = 350;
+const AI_VISION_GUILD_CONCURRENCY = 2;
 
 function createAutomaticSpamDetectionManager({ client, configStore }) {
   const allowedGuildIds = parseAllowedGuildIds();
+  const aiVisionDailyLimitBypassGuildIds = parseAiVisionDailyLimitBypassGuildIds();
   const configCache = new Map();
   const attachmentSessionByAuthor = new Map();
   const messageQueueByAuthor = new Map();
+  const aiVisionQueueByGuild = new Map();
   const logger = createLogger('automatic-spam-detection');
   const visionChecker = createAiVisionChecker({
     openRouterApiKey: OPENROUTER_API_KEY,
@@ -85,6 +89,44 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return `<t:${Math.floor(new Date(date).getTime() / 1000)}:${style}>`;
   }
 
+  function localDateString(date, timezone) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date || new Date());
+    const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${byType.year}-${byType.month}-${byType.day}`;
+  }
+
+  function runQueuedAiVision(guildId, task) {
+    let state = aiVisionQueueByGuild.get(guildId);
+    if (!state) {
+      state = { active: 0, queue: [] };
+      aiVisionQueueByGuild.set(guildId, state);
+    }
+
+    return new Promise((resolve, reject) => {
+      const runNext = () => {
+        if (state.active >= AI_VISION_GUILD_CONCURRENCY || state.queue.length === 0) return;
+        const next = state.queue.shift();
+        state.active += 1;
+        Promise.resolve()
+          .then(next.task)
+          .then(next.resolve, next.reject)
+          .finally(() => {
+            state.active -= 1;
+            if (state.active === 0 && state.queue.length === 0) aiVisionQueueByGuild.delete(guildId);
+            runNext();
+          });
+      };
+
+      state.queue.push({ task, resolve, reject });
+      runNext();
+    });
+  }
+
   function reasonText(reason, t) {
     if (reason === 'same_author_2plus_attachments_in_2plus_channels') {
       return t('automatic.reasonCrossChannel');
@@ -99,6 +141,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     if (event.status === 'ban_failed') return t('automatic.statusBanFailed', { error: event.decisionError || 'unknown error' });
     if (event.status === 'timeout_remove_failed') return t('automatic.statusTimeoutRemoveFailed', { error: event.decisionError || 'unknown error' });
     if (event.status === 'ai_analysis_failed') return t('automatic.statusAiAnalysisFailed');
+    if (event.status === 'ai_daily_limit_reached') return t('automatic.statusAiDailyLimitReached');
     if (event.status === 'ai_low_confidence') return t('automatic.statusAiLowConfidence');
     if (event.status === 'ai_no_match') return t('automatic.statusAiNoMatch');
     return t('automatic.statusWaiting');
@@ -109,6 +152,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     if (event.aiVisionStatus === 'no_match') return t('automatic.aiVisionNoMatch');
     if (event.aiVisionStatus === 'low_confidence') return t('automatic.aiVisionLowConfidence');
     if (event.aiVisionStatus === 'failed') return t('automatic.aiVisionFailed');
+    if (event.aiVisionStatus === 'daily_limit_reached') return t('automatic.aiVisionDailyLimitReached');
     return event.aiVisionStatus || t('automatic.notAvailable');
   }
 
@@ -409,6 +453,30 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return configStore.updateAutomaticSpamDetectionReviewMessage(event.id, logChannel.id, message.id).catch(() => event);
   }
 
+  async function sendAiVisionDailyLimitResetMessage(guild, config, usageDate) {
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) return null;
+    const t = createTranslator(config.language);
+    return logChannel.send({
+      content: [
+        `### ${t('automatic.aiVisionDailyLimitResetTitle')}`,
+        t('automatic.aiVisionDailyLimitResetBody', {
+          date: usageDate,
+          timezone: config.timezone,
+          limit: `${config.aiVisionDailyLimit}/day`,
+        }),
+      ].join('\n'),
+      allowedMentions: { parse: [] },
+    }).catch((error) => {
+      logger.warn('Failed to send AI Verdict daily limit reset notice', {
+        guildId: guild.id,
+        usageDate,
+        error: safeError(error),
+      });
+      return null;
+    });
+  }
+
   async function sendOrUpdateDangerMessage(event) {
     if (!event?.reviewChannelId || !event.reviewMessageId) return null;
     const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
@@ -539,6 +607,53 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       return;
     }
 
+    if (!aiVisionDailyLimitBypassGuildIds.has(message.guild.id)) {
+      const usageDate = localDateString(checkedAt, config.timezone);
+      const usage = await configStore.tryConsumeAiVisionDailyUsage(
+        message.guild.id,
+        usageDate,
+        config.aiVisionDailyLimit
+      ).catch((error) => {
+        logger.error('Failed to consume AI Verdict daily usage', {
+          guildId: message.guild.id,
+          usageDate,
+          error: safeError(error),
+        });
+        return null;
+      });
+
+      if (!usage?.allowed) {
+        const event = await createDetectionEvent({
+          message,
+          danger,
+          status: 'ai_daily_limit_reached',
+          aiVision: {
+            aiVisionStatus: 'daily_limit_reached',
+            aiVisionModel: model,
+            aiVisionImageUrl: image.url,
+            aiVisionError: `Daily AI Verdict limit reached for ${usageDate} (${usage?.usedCount || config.aiVisionDailyLimit}/${usage?.limit || config.aiVisionDailyLimit}) in ${config.timezone}.`,
+            aiVisionCheckedAt: checkedAt,
+          },
+        });
+        await sendAiVisionWarningMessage(message.guild, config, event);
+        logger.warn('AI Verdict daily limit reached', {
+          guildId: message.guild.id,
+          usageDate,
+          timezone: config.timezone,
+          limit: usage?.limit || config.aiVisionDailyLimit,
+        });
+        return;
+      }
+
+      if (usage.usedCount === 1) {
+        await sendAiVisionDailyLimitResetMessage(message.guild, config, usageDate);
+      }
+    } else {
+      logger.info('AI Verdict daily limit bypassed for allowlisted guild', {
+        guildId: message.guild.id,
+      });
+    }
+
     let vision;
     try {
       vision = await visionChecker.analyzeAttachment(image, {
@@ -631,7 +746,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
 
   async function handleDanger({ message, member, config, danger }) {
     if (config.aiVisionSpamCheckEnabled) {
-      await handleAiVisionDanger({ message, member, config, danger });
+      await runQueuedAiVision(message.guild.id, () => handleAiVisionDanger({ message, member, config, danger }));
       return;
     }
     await handleConfirmedDanger({ message, member, config, danger });

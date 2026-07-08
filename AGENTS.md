@@ -15,8 +15,11 @@
 
 ## Config And Database
 - Guild settings live in PostgreSQL `spam_catcher_config.config_json`, not `.env`; unknown guilds are disabled by default.
-- `.env` is only runtime connection/allowlist/API-key config: token, database URL, SSL mode, pool size, `ALLOWED_GUILD_IDS`, optional `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL`, optional `GEMINI_API_KEY`, optional `GEMINI_MODEL`.
+- `.env` is only runtime connection/allowlist/API-key config: token, database URL, SSL mode, pool size, `ALLOWED_GUILD_IDS`, optional `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL`, optional `GEMINI_API_KEY`, optional `GEMINI_MODEL`, optional `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS`.
 - Tables auto-create at runtime in `src/config-store.js`; update `scripts/schema-postgres.sql` too when changing schema.
+- AI Verdict daily usage is tracked in `automatic_spam_detection_ai_usage` by `(guild_id, usage_date)` using the guild config `timezone`; default daily limit is `3`.
+- AI Verdict reset notices are sent to the configured log channel on the first quota-counted AI Verdict trigger for a new guild-local date.
+- `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS` is a comma-separated env allowlist that bypasses only the AI Verdict daily quota.
 - Local/VPS PostgreSQL should use `PG_SSL_MODE=disable` and bind to `127.0.0.1`; see `setup.md` for safe setup.
 
 ## Feature Boundaries
@@ -30,4 +33,4 @@
 - Timeout removal should call `member.timeout(null, ...)` whenever the member exists; do not gate it on `communicationDisabledUntilTimestamp`, which can be stale/missing.
 - Missing users are expected for leave/kick/ban cases; handle failed member fetches without crashing and update the review/Danger card.
 - Automatic Detection and trap flow should share moderation workflow behavior, not maintain separate appeal/DM implementations.
-- AI Verdict Checker applies only to Automatic Detection, analyzes only the first supported image attachment, uses OpenRouter by default (`xiaomi/mimo-v2.5`) with Gemini fallback, and must not timeout when AI analysis fails.
+- AI Verdict Checker applies only to Automatic Detection, analyzes only the first supported image attachment, uses OpenRouter by default (`xiaomi/mimo-v2.5`) with Gemini fallback, queues at most `2` concurrent AI analyses per guild, and must not timeout when AI analysis fails or daily quota is reached.

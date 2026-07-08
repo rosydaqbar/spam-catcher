@@ -7,9 +7,19 @@ const {
   OPENROUTER_MODEL,
   GEMINI_API_KEY,
   GEMINI_MODEL,
+  AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS,
 } = process.env;
 
 function parseAllowedGuildIds(value = ALLOWED_GUILD_IDS) {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+}
+
+function parseAiVisionDailyLimitBypassGuildIds(value = AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS) {
   return new Set(
     String(value || '')
       .split(',')
@@ -38,6 +48,8 @@ module.exports = {
   OPENROUTER_MODEL,
   GEMINI_API_KEY,
   GEMINI_MODEL,
+  AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS,
   parseAllowedGuildIds,
+  parseAiVisionDailyLimitBypassGuildIds,
   requireRuntimeEnv,
 };

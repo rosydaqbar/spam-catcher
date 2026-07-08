@@ -25,6 +25,8 @@ Options:
   --ban-mode <mode>           delayed, immediate, or after_timeout. Defaults to delayed.
   --ban-delay-minutes <num>   Defaults to 10.
   --language <en|id>          Defaults to en.
+  --timezone <iana>           Defaults to UTC, for daily AI Verdict reset.
+  --ai-vision-daily-limit <n> Defaults to 3.
   --webhook-enabled <bool>    Defaults to false.
   --webhook-urls <json>       JSON array: [{"channelId":"...","webhookUrl":"..."}].
   --help                      Show this help.
@@ -124,6 +126,8 @@ async function main() {
     banMode: args.banMode || 'delayed',
     banDelayMinutes: parseNumber(args.banDelayMinutes, 10),
     language: args.language,
+    timezone: args.timezone,
+    aiVisionDailyLimit: parseNumber(args.aiVisionDailyLimit, 3),
     webhookEnabled: parseBoolean(args.webhookEnabled, false),
     webhookUrls: parseWebhookUrls(args.webhookUrls),
   });
@@ -141,6 +145,8 @@ async function main() {
     banMode: saved.banMode,
     banDelayMinutes: saved.banDelayMinutes,
     language: saved.language,
+    timezone: saved.timezone,
+    aiVisionDailyLimit: saved.aiVisionDailyLimit,
     webhookEnabled: saved.webhookEnabled,
     webhookCount: saved.webhookUrls.length,
   }, null, 2));

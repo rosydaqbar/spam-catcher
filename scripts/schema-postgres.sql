@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage (
+  guild_id TEXT NOT NULL,
+  usage_date DATE NOT NULL,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, usage_date)
+);
+
 CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_created
   ON spam_catcher_events(guild_id, created_at DESC);
 

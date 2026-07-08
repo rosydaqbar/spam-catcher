@@ -173,6 +173,28 @@ function createSetupCommandManager({ client, configStore }) {
     return `${safeMinutes} minute${safeMinutes === 1 ? '' : 's'}`;
   }
 
+  function localDateString(date, timezone) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date || new Date());
+    const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${byType.year}-${byType.month}-${byType.day}`;
+  }
+
+  async function getAiVisionQuotaInfo(guildId, config) {
+    const usageDate = localDateString(new Date(), config.timezone);
+    const usedCount = await configStore.getAiVisionDailyUsage(guildId, usageDate).catch(() => null);
+    return {
+      usageDate,
+      usedCount,
+      limit: config.aiVisionDailyLimit,
+      timezone: config.timezone,
+    };
+  }
+
   function outcomeLabel(config) {
     const t = createTranslator(config.language);
     const timeout = formatMinutes(config.timeoutMinutes, config.language);
@@ -327,6 +349,7 @@ function createSetupCommandManager({ client, configStore }) {
           `# ${t('setup.dashboardTitle')}`,
           `-# ${t('setup.guild')}: \`${guildId}\``,
           `**🛡️ ${t('setup.status')}:** \`${statusLabel}\`${statusSuffix(statusMessage, config)}`,
+          `-# ${t('setup.aiVisionQuota')}: ${config.aiVisionDailyLimit}/day, ${t('setup.timezone')}: ${config.timezone}`,
         ].join('\n'))
       )
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
@@ -390,6 +413,8 @@ function createSetupCommandManager({ client, configStore }) {
             `**Trigger:** \`${config.attachmentSpamThreshold}+ attachments twice within ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)}\``,
             `**Action:** \`timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, log Danger card\``,
             `**${t('setup.aiVision')}:** \`${config.aiVisionSpamCheckEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
+            `**${t('setup.aiVisionDailyLimit')}:** \`${config.aiVisionDailyLimit}/day\``,
+            `**${t('setup.timezone')}:** \`${config.timezone}\``,
             `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
             `-# ${t('setup.independentDetection')}`,
           ].join('\n'),
@@ -581,10 +606,17 @@ function createSetupCommandManager({ client, configStore }) {
     return buildComponentPayload([container], { ephemeral });
   }
 
-  function buildAutomaticSpamDetectionPanelPayload(guildId, config, statusMessage, { ephemeral = false } = {}) {
+  function buildAutomaticSpamDetectionPanelPayload(guildId, config, statusMessage, { ephemeral = false, quotaInfo = null } = {}) {
     const t = createTranslator(config.language);
     const isReady = isAutomaticSpamDetectionReady(config);
     const statusLabel = config.automaticSpamDetectionEnabled ? t('setup.enabledStatus') : isReady ? t('setup.offReadyStatus') : t('setup.offNeedsLogStatus');
+    const quotaLine = quotaInfo?.usedCount === null
+      ? `**${t('setup.aiVisionQuota')}:** \`${t('setup.notAvailable')}\``
+      : `**${t('setup.aiVisionQuota')}:** \`${t('setup.aiVisionQuotaUsed', {
+        used: quotaInfo?.usedCount || 0,
+        limit: config.aiVisionDailyLimit,
+        date: quotaInfo?.usageDate || 'today',
+      })}\``;
     const container = new ContainerBuilder()
       .setAccentColor(config.automaticSpamDetectionEnabled ? 0xef4444 : isReady ? 0xf59e0b : 0x6b7280)
       .addSectionComponents(
@@ -612,6 +644,9 @@ function createSetupCommandManager({ client, configStore }) {
           [
             `**${t('setup.status')}:** \`${config.aiVisionSpamCheckEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
             `**${t('setup.aiVisionConfidence')}:** \`${Math.round(config.aiVisionConfidenceThreshold * 100)}%\``,
+            `**${t('setup.aiVisionDailyLimit')}:** \`${config.aiVisionDailyLimit}/day\``,
+            quotaLine,
+            `**${t('setup.timezone')}:** \`${config.timezone}\``,
             `**${t('setup.aiVisionTriggerWords')}:** \`${config.aiVisionTriggerWords.length}\``,
             `-# ${t('setup.aiVisionFirstImageOnly')}`,
           ].join('\n'),
@@ -628,6 +663,11 @@ function createSetupCommandManager({ client, configStore }) {
       );
 
     return buildComponentPayload([container], { ephemeral });
+  }
+
+  async function buildAutomaticSpamDetectionPanelPayloadWithQuota(guildId, config, statusMessage, options = {}) {
+    const quotaInfo = await getAiVisionQuotaInfo(guildId, config);
+    return buildAutomaticSpamDetectionPanelPayload(guildId, config, statusMessage, { ...options, quotaInfo });
   }
 
   function buildNoticesPanelPayload(guildId, config, statusMessage, { ephemeral = false } = {}) {
@@ -659,7 +699,7 @@ function createSetupCommandManager({ client, configStore }) {
     if (panel === 'spam') return buildSpamCatcherPanelPayload(guildId, config, statusMessage, options);
     if (panel === 'channels') return buildChannelsPanelPayload(guildId, config, statusMessage, options);
     if (panel === 'autoban') return buildAutoBanPanelPayload(guildId, config, statusMessage, options);
-    if (panel === 'automatic') return buildAutomaticSpamDetectionPanelPayload(guildId, config, statusMessage, options);
+    if (panel === 'automatic') return buildAutomaticSpamDetectionPanelPayloadWithQuota(guildId, config, statusMessage, options);
     if (panel === 'notices') return buildNoticesPanelPayload(guildId, config, statusMessage, options);
     return buildDashboardPayload(guildId, config, statusMessage, options);
   }
@@ -985,8 +1025,9 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function saveAndUpdate(interaction, nextConfig, statusMessage, buildPayload = buildDashboardPayload) {
     const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, nextConfig);
-    await interaction.update(buildPayload(interaction.guildId, saved, statusMessage)).catch(async () => {
-      await interaction.editReply(buildPayload(interaction.guildId, saved, statusMessage)).catch(() => null);
+    const payload = await buildPayload(interaction.guildId, saved, statusMessage);
+    await interaction.update(payload).catch(async () => {
+      await interaction.editReply(await buildPayload(interaction.guildId, saved, statusMessage)).catch(() => null);
     });
   }
 
@@ -1026,7 +1067,7 @@ function createSetupCommandManager({ client, configStore }) {
     const [, action, value] = interaction.customId.split(':');
 
     if (action === 'panel') {
-      await interaction.reply(buildPanelPayload(value, interaction.guildId, config, null, { ephemeral: true }));
+      await interaction.reply(await buildPanelPayload(value, interaction.guildId, config, null, { ephemeral: true }));
       return true;
     }
 
@@ -1083,7 +1124,7 @@ function createSetupCommandManager({ client, configStore }) {
 
     if (action === 'autodetect') {
       if (value === 'on' && !isAutomaticSpamDetectionReady(config)) {
-        await interaction.update(buildAutomaticSpamDetectionPanelPayload(
+        await interaction.update(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
           interaction.guildId,
           config,
           t('setup.cannotEnableDetection')
@@ -1094,14 +1135,14 @@ function createSetupCommandManager({ client, configStore }) {
         interaction,
         { ...config, automaticSpamDetectionEnabled: value === 'on' },
         value === 'on' ? t('setup.detectionEnabled') : t('setup.detectionDisabled'),
-        buildAutomaticSpamDetectionPanelPayload
+        buildAutomaticSpamDetectionPanelPayloadWithQuota
       );
       return true;
     }
 
     if (action === 'aivision') {
       if (value === 'on' && !hasAiVisionKey()) {
-        await interaction.update(buildAutomaticSpamDetectionPanelPayload(
+        await interaction.update(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
           interaction.guildId,
           config,
           t('setup.cannotEnableAiVision')
@@ -1112,7 +1153,7 @@ function createSetupCommandManager({ client, configStore }) {
         interaction,
         { ...config, aiVisionSpamCheckEnabled: value === 'on' },
         value === 'on' ? t('setup.aiVisionEnabled') : t('setup.aiVisionDisabled'),
-        buildAutomaticSpamDetectionPanelPayload
+        buildAutomaticSpamDetectionPanelPayloadWithQuota
       );
       return true;
     }
@@ -1181,7 +1222,7 @@ function createSetupCommandManager({ client, configStore }) {
       ...config,
       aiVisionTriggerWords: words,
     });
-    await interaction.reply(buildAutomaticSpamDetectionPanelPayload(
+    await interaction.reply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
       interaction.guildId,
       saved,
       t('setup.aiVisionTriggerWordsSaved'),

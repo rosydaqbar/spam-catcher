@@ -31,6 +31,9 @@ let spamCatcherEventsEnsured = false;
 let spamCatcherNoticeMessagesEnsured = false;
 let automaticSpamDetectionEnsured = false;
 
+const DEFAULT_TIMEZONE = 'UTC';
+const DEFAULT_AI_VISION_DAILY_LIMIT = 3;
+
 const DEFAULT_AI_VISION_TRIGGER_WORDS = [
   'free nitro',
   'free discord nitro',
@@ -256,7 +259,9 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   attachmentSpamTimeoutMinutes: 40_320,
   aiVisionSpamCheckEnabled: false,
   aiVisionConfidenceThreshold: 0.7,
+  aiVisionDailyLimit: DEFAULT_AI_VISION_DAILY_LIMIT,
   aiVisionTriggerWords: DEFAULT_AI_VISION_TRIGGER_WORDS,
+  timezone: DEFAULT_TIMEZONE,
   language: DEFAULT_LANGUAGE,
 };
 
@@ -329,6 +334,7 @@ function normalizeSpamCatcherConfig(value) {
   const attachmentSpamWindowSeconds = Number(source.attachmentSpamWindowSeconds);
   const attachmentSpamTimeoutMinutes = Number(source.attachmentSpamTimeoutMinutes);
   const aiVisionConfidenceThreshold = Number(source.aiVisionConfidenceThreshold);
+  const aiVisionDailyLimit = Number(source.aiVisionDailyLimit);
   const webhookUrls = Array.isArray(source.webhookUrls)
     ? source.webhookUrls
       .filter((item) => item && typeof item === 'object')
@@ -394,9 +400,22 @@ function normalizeSpamCatcherConfig(value) {
     aiVisionConfidenceThreshold: Number.isFinite(aiVisionConfidenceThreshold)
       ? Math.max(0, Math.min(1, aiVisionConfidenceThreshold))
       : DEFAULT_SPAM_CATCHER_CONFIG.aiVisionConfidenceThreshold,
+    aiVisionDailyLimit: Number.isFinite(aiVisionDailyLimit)
+      ? Math.max(0, Math.min(10_000, Math.floor(aiVisionDailyLimit)))
+      : DEFAULT_SPAM_CATCHER_CONFIG.aiVisionDailyLimit,
     aiVisionTriggerWords: normalizeAiVisionTriggerWords(source.aiVisionTriggerWords),
+    timezone: normalizeTimezone(source.timezone),
     language: normalizeLanguage(source.language),
   };
+}
+
+function normalizeTimezone(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return DEFAULT_TIMEZONE;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: value.trim() }).resolvedOptions().timeZone;
+  } catch {
+    return DEFAULT_TIMEZONE;
+  }
 }
 
 function normalizeAiVisionTriggerWords(value) {
@@ -573,6 +592,17 @@ async function ensureAutomaticSpamDetectionTables() {
   );
   await query(
     'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message ON automatic_spam_detection_events(review_channel_id, review_message_id)'
+  );
+  await query(
+    `
+      CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage (
+        guild_id TEXT NOT NULL,
+        usage_date DATE NOT NULL,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (guild_id, usage_date)
+      )
+    `
   );
   automaticSpamDetectionEnsured = true;
 }
@@ -1116,6 +1146,44 @@ async function markAutomaticSpamDetectionAppealed(id, appealMessage) {
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
+async function tryConsumeAiVisionDailyUsage(guildId, usageDate, limit) {
+  await ensureAutomaticSpamDetectionTables();
+  const safeLimit = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : DEFAULT_AI_VISION_DAILY_LIMIT;
+  if (safeLimit <= 0) {
+    return { allowed: false, usedCount: 0, limit: safeLimit };
+  }
+
+  const res = await query(
+    `
+      INSERT INTO automatic_spam_detection_ai_usage (guild_id, usage_date, used_count, updated_at)
+      VALUES ($1, $2::date, 1, NOW())
+      ON CONFLICT (guild_id, usage_date) DO UPDATE SET
+        used_count = automatic_spam_detection_ai_usage.used_count + 1,
+        updated_at = NOW()
+      WHERE automatic_spam_detection_ai_usage.used_count < $3
+      RETURNING used_count
+    `,
+    [guildId, usageDate, safeLimit]
+  );
+
+  const usedCount = Number(res.rows[0]?.used_count || safeLimit);
+  return { allowed: res.rowCount > 0, usedCount, limit: safeLimit };
+}
+
+async function getAiVisionDailyUsage(guildId, usageDate) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      SELECT used_count
+      FROM automatic_spam_detection_ai_usage
+      WHERE guild_id = $1
+        AND usage_date = $2::date
+    `,
+    [guildId, usageDate]
+  );
+  return Number(res.rows[0]?.used_count || 0);
+}
+
 async function close() {
   if (pool) {
     await pool.end();
@@ -1125,6 +1193,7 @@ async function close() {
 module.exports = {
   DEFAULT_SPAM_CATCHER_CONFIG,
   normalizeSpamCatcherConfig,
+  normalizeTimezone,
   getGuildConfig,
   getSpamCatcherConfig,
   saveSpamCatcherConfig,
@@ -1151,5 +1220,7 @@ module.exports = {
   updateAutomaticSpamDetectionReviewMessage,
   updateAutomaticSpamDetectionDecision,
   markAutomaticSpamDetectionAppealed,
+  tryConsumeAiVisionDailyUsage,
+  getAiVisionDailyUsage,
   close,
 };

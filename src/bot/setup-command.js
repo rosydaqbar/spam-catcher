@@ -56,13 +56,17 @@ function createSetupCommandManager({ client, configStore }) {
     return new SlashCommandBuilder()
       .setName(COMMAND_NAME)
       .setDescription('Manage Spam Catcher for this server')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addSubcommand((subcommand) => subcommand
+        .setName('help')
+        .setDescription('Show Spam Catcher commands and features'))
       .addSubcommand((subcommand) => subcommand
         .setName('setup')
-        .setDescription('Open the Spam Catcher setup panel'))
+        .setDescription('Open the Spam Catcher setup panel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator))
       .addSubcommand((subcommand) => subcommand
         .setName('lang')
         .setDescription('Set the Spam Catcher interface language')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption((option) => option
           .setName('language')
           .setDescription('Language to use for Spam Catcher UI in this server')
@@ -74,6 +78,7 @@ function createSetupCommandManager({ client, configStore }) {
       .addSubcommand((subcommand) => subcommand
         .setName('check')
         .setDescription('Check spam status for a user')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption((option) => option
           .setName('user')
           .setDescription('User to check')
@@ -932,6 +937,51 @@ function createSetupCommandManager({ client, configStore }) {
     return { notices, failures };
   }
 
+  function buildHelpPayload(interaction) {
+    const lines = [
+      `### /spam-catcher help`,
+      `Shows this help overview.`,
+      '',
+      `### /spam-catcher setup`,
+      `Open the interactive setup dashboard. Configure trap channels, automatic detection, AI Verdict, timeout, ban, language, and notices. Restricted to Administrators.`,
+      '',
+      `### /spam-catcher lang`,
+      `Set the server's display language (English or Indonesia). Restricted to Administrators.`,
+      '',
+      `### /spam-catcher check <user>`,
+      `View a user's automatic detection status, spam history, and recent trap channel events. Restricted to Administrators.`,
+      '',
+      `## Trap Channels`,
+      `Designated text channels that catch spam. Anyone who posts there gets timed out or banned based on server settings.`,
+      '',
+      `## Automatic Spam Detection`,
+      `Watches all guild channels for repeated attachment bursts from the same user. Triggers timeout, logs a Danger card, and DMs the user with an appeal button.`,
+      '',
+      `## AI Verdict Checker`,
+      `Optional add-on for Automatic Detection. Analyzes images using computer vision (OpenRouter/Gemini) before applying a timeout. Configurable trigger words, confidence threshold, and daily quota (resets by server timezone).`,
+      '',
+      `## Appeal System`,
+      `Timed-out users receive a DM with an Appeal button. Their explanation appears on the review card for admins to review. Admins can remove timeout or ban directly from the card.`,
+    ];
+
+    return {
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0x3b82f6)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(lines.join('\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function handleHelpCommand(interaction) {
+    await interaction.reply(buildHelpPayload(interaction));
+    return true;
+  }
+
   async function handleSetupCommand(interaction) {
     if (!await requireAdmin(interaction)) return true;
     const config = await configStore.getSpamCatcherConfig(interaction.guildId);
@@ -1232,6 +1282,11 @@ function createSetupCommandManager({ client, configStore }) {
   }
 
   async function handleInteraction(interaction) {
+    if (interaction.isChatInputCommand()
+      && interaction.commandName === COMMAND_NAME
+      && interaction.options.getSubcommand(false) === 'help') {
+      return handleHelpCommand(interaction);
+    }
     if (interaction.isChatInputCommand()
       && interaction.commandName === COMMAND_NAME
       && interaction.options.getSubcommand(false) === 'setup') {

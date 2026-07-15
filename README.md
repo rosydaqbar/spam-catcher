@@ -6,6 +6,10 @@ Trap-channel Spam Catcher and Automatic Spam Detection have separate setup toggl
 
 Guild config lives in PostgreSQL, not `.env`. Unknown guilds are disabled by default.
 
+### Try Ready to use bot. (✨ AI Enabled)
+
+[![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
+
 ## Required To Run
 
 - Node.js `18+`

@@ -15,16 +15,14 @@ Spam Catcher is a Discord moderation bot with two independent protection modes:
 Both modes use the same timeout DMs, appeal flow, timeout-removal DMs, and ban DMs. Guild settings are stored in PostgreSQL. New guilds remain disabled until an Administrator completes setup.
 
 ### 🚀 Ready-to-use bot
-> [!TIP]
-> **AI Verdict is enabled.**
->
-> [![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
+**AI Verdict is enabled.**
+
+[![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
 
 ### 🧰 Host your own
-> [!NOTE]
-> **Run Spam Catcher with your own Discord app and PostgreSQL database.**
->
-> [![How to Setup](https://img.shields.io/badge/How%20to%20Setup-2F363D?style=for-the-badge&logo=github&logoColor=white)](#setup)
+**Run Spam Catcher with your own Discord app and PostgreSQL database.**
+
+[![How to Setup](https://img.shields.io/badge/How%20to%20Setup-2F363D?style=for-the-badge&logo=github&logoColor=white)](#setup)
 
 > [!IMPORTANT]
 > **Spam Catcher does not read or analyze message text.**

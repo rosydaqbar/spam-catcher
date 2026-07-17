@@ -1,4 +1,11 @@
-# Spam Catcher
+# 🛡️ Spam Catcher
+
+> **Trap-channel enforcement and automatic attachment-spam detection for Discord.**
+
+![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![discord.js 14](https://img.shields.io/badge/discord.js-14-5865F2?style=flat-square&logo=discord&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Required-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![License CC0-1.0](https://img.shields.io/badge/License-CC0--1.0-737373?style=flat-square)
 
 Spam Catcher is a Discord moderation bot with two independent protection modes:
 
@@ -7,29 +14,37 @@ Spam Catcher is a Discord moderation bot with two independent protection modes:
 
 Both modes use the same timeout DMs, appeal flow, timeout-removal DMs, and ban DMs. Guild settings are stored in PostgreSQL. New guilds remain disabled until an Administrator completes setup.
 
-### Try Ready to use bot. (✨ AI Enabled)
+### 🚀 Ready-to-use bot
+> [!TIP]
+> **AI Verdict is enabled.**
+>
+> [![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
 
-[![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
-
-### Host your own
-
-[![How to Setup](https://img.shields.io/badge/How%20to%20Setup-2F363D?style=for-the-badge&logo=github&logoColor=white)](#setup)
+### 🧰 Host your own
+> [!NOTE]
+> **Run Spam Catcher with your own Discord app and PostgreSQL database.**
+>
+> [![How to Setup](https://img.shields.io/badge/How%20to%20Setup-2F363D?style=for-the-badge&logo=github&logoColor=white)](#setup)
 
 > [!IMPORTANT]
 > **Spam Catcher does not read or analyze message text.**
 >
 > Discord's `Message Content Intent` is used only to receive attachment metadata. Automatic Attachment Detection uses the author, channel, attachment count, timestamps, and, when AI Verdict is enabled, the first supported image attachment.
 
-## Features
+---
 
-- **Trap Channels** - Apply a timeout or ban when a user posts in a designated channel.
-- **Automatic Attachment Detection** - Detect repeated attachment bursts and create one tracked Danger incident.
-- **AI Verdict** - Analyze the trigger image once and add OCR-based evidence to the existing incident.
-- **Moderation And Appeals** - Share timeout, ban, DM, appeal, and administrator review workflows.
-- **Trap Channel Notices** - Post and maintain warning messages in configured trap channels.
+## ✨ Features
+
+| Feature | Description |
+| --- | --- |
+| 🚧 **Trap Channels** | Apply a timeout or ban when a user posts in a designated channel. |
+| 📎 **Automatic Attachment Detection** | Detect repeated attachment bursts and create one tracked Danger incident. |
+| 🧠 **AI Verdict** | Analyze the trigger image once and add OCR-based evidence to the existing incident. |
+| ⚖️ **Moderation And Appeals** | Share timeout, ban, DM, appeal, and administrator review workflows. |
+| 📣 **Trap Channel Notices** | Post and maintain warning messages in configured trap channels. |
 
 <details>
-<summary><strong>Trap Channels</strong></summary>
+<summary><strong>🚧 Trap Channels</strong></summary>
 
 Administrators choose one or more text channels as traps and configure the moderation action. When a non-administrator posts in an enabled trap channel, Spam Catcher records the event and applies the selected timeout or ban flow.
 
@@ -40,7 +55,7 @@ Caught messages remain in the trap channel. Event totals count incidents, not di
 </details>
 
 <details>
-<summary><strong>Automatic Attachment Detection</strong></summary>
+<summary><strong>📎 Automatic Attachment Detection</strong></summary>
 
 Automatic Attachment Detection is disabled by default. When enabled, it processes messages from users the bot can moderate and ignores:
 
@@ -73,7 +88,7 @@ Danger cards display moderation and AI statuses separately. When an incident is 
 </details>
 
 <details>
-<summary><strong>AI Verdict</strong></summary>
+<summary><strong>🧠 AI Verdict</strong></summary>
 
 AI Verdict is an optional Automatic Attachment Detection add-on. It never runs for Trap Channel events.
 
@@ -99,7 +114,7 @@ If the quota is exhausted, no provider request is made. The existing Danger card
 </details>
 
 <details>
-<summary><strong>Moderation And Appeals</strong></summary>
+<summary><strong>⚖️ Moderation And Appeals</strong></summary>
 
 Trap Channel incidents support these timeout durations:
 
@@ -145,7 +160,7 @@ If a user has left, been kicked, or been banned before an Administrator acts, th
 </details>
 
 <details>
-<summary><strong>Trap Channel Notices</strong></summary>
+<summary><strong>📣 Trap Channel Notices</strong></summary>
 
 Trap notices warn users not to post in configured trap channels. Administrators can post or update them from `/spam-catcher setup`.
 
@@ -153,9 +168,13 @@ Notice message IDs are stored in `spam_catcher_notice_messages`. The bot edits a
 
 </details>
 
-## Setup
+---
 
-### Install
+<a id="setup"></a>
+
+## ⚙️ Setup
+
+### 📦 Install
 
 Requirements:
 
@@ -171,7 +190,7 @@ npm install
 npm run check
 ```
 
-### Create And Invite The Discord Bot
+### 🤖 Create And Invite The Discord Bot
 
 1. Create an application in the Discord Developer Portal.
 2. Create its bot user and copy the token.
@@ -181,7 +200,7 @@ npm run check
 6. Grant `View Channels`, `Send Messages`, `Read Message History`, and `Moderate Members`.
 7. Grant `Ban Members` if you plan to use Auto Ban or the `Ban User` card action.
 
-### Environment Variables
+### 🔐 Environment Variables
 
 Create `.env` from the example file:
 
@@ -220,7 +239,7 @@ AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS=
 
 Guild IDs, channel IDs, timeout settings, ban settings, language, timezone, trigger words, and daily limits belong in PostgreSQL guild config, not `.env`.
 
-### PostgreSQL
+### 🗄️ PostgreSQL
 
 Tables are created automatically at runtime. You can also apply `scripts/schema-postgres.sql` manually.
 
@@ -242,9 +261,9 @@ DATABASE_URL=postgresql://spamcatcher:password@127.0.0.1:5432/spam_catcher
 PG_SSL_MODE=disable
 ```
 
-Do not expose PostgreSQL publicly. Bind it to `127.0.0.1` or use a private network. See `setup.md` for VPS installation instructions.
+Do not expose PostgreSQL publicly. Bind it to `127.0.0.1` or use a private network.
 
-### Run The Bot
+### ▶️ Run The Bot
 
 Start the bot:
 
@@ -262,7 +281,7 @@ On startup, the bot:
 
 Global Discord command updates may take time to propagate.
 
-### Complete Setup In Discord
+### ✅ Complete Setup In Discord
 
 Run this command as a Discord Administrator:
 
@@ -280,9 +299,11 @@ Saved channels are preselected when the setup panel is reopened, and changes are
 
 <img width="521" height="829" alt="Spam Catcher Discord setup dashboard" src="https://github.com/user-attachments/assets/75e2c2e2-5310-4ac4-a16b-e8430d028fb4" />
 
-## Commands
+---
 
-### `/spam-catcher setup`
+## ⌨️ Commands
+
+### 🛠️ `/spam-catcher setup`
 
 Opens the Discord Components V2 setup dashboard for Administrators. Each summary displays saved settings and opens an ephemeral editing panel.
 
@@ -293,7 +314,7 @@ Opens the Discord Components V2 setup dashboard for Administrators. Each summary
 - `AI Verdict Checker`: trigger words, confidence threshold, daily quota, and provider readiness
 - `Trap Notices Summary`: configured trap-channel count and whether notices are ready to post
 
-### `/spam-catcher lang`
+### 🌐 `/spam-catcher lang`
 
 Sets the guild's interface language:
 
@@ -304,7 +325,7 @@ Sets the guild's interface language:
 
 The selected language applies to setup panels, trap notices, Danger cards, timeout DMs, appeal modals, and shared moderation messages. Supported stored values are `en` and `id`.
 
-### `/spam-catcher check`
+### 🔎 `/spam-catcher check`
 
 Shows a user's Automatic Attachment Detection status and Trap Channel event history. The user argument accepts either an `@mention` or a raw Discord user ID.
 
@@ -312,7 +333,7 @@ Shows a user's Automatic Attachment Detection status and Trap Channel event hist
 /spam-catcher check user:@User
 ```
 
-### CLI Commands
+### 💻 CLI Commands
 
 The Discord setup dashboard is preferred. CLI commands require the runtime environment variables because they connect to PostgreSQL and, where applicable, Discord.
 
@@ -355,9 +376,11 @@ npm run post:notices -- --all
 
 Notice failures are logged with the `[spam-catcher-setup]` prefix. Logs include the channel ID, delivery method, stored message ID, failure stage, Discord response body when available, and final success/failure totals.
 
-## Reference
+---
 
-### Permissions And Intents
+## 📚 Reference
+
+### 🔐 Permissions And Intents
 
 Required Discord permissions:
 
@@ -378,13 +401,13 @@ Required gateway intents:
 
 `Moderate Members` is required for timeout and timeout removal. `MessageContent` is required for Discord to include attachment metadata; the bot does not inspect message text.
 
-### Production Deployment
+### 🚀 Production Deployment
 
 Run the bot under a process manager such as `systemd`, `pm2`, or Docker. Keep PostgreSQL on `127.0.0.1` or a private network and use `PG_SSL_MODE=disable` only for a trusted local/VPS connection.
 
 The delayed-ban loop checks due events every `30 seconds`. Restarting the process does not remove stored guild config, incidents, scheduled ban state, notice message IDs, or AI quota usage because they are persisted in PostgreSQL.
 
-### Behavior Notes
+### 📌 Behavior Notes
 
 - Discord Administrators are ignored by both moderation features.
 - Caught Trap Channel messages are not deleted.
@@ -395,7 +418,9 @@ The delayed-ban loop checks due events every `30 seconds`. Restarting the proces
 - Automatic Attachment Detection never processes messages in active trap channels.
 - AI Verdict failure or quota exhaustion never delays or cancels the immediate Danger action.
 
-## Changelog
+---
+
+## 📝 Changelog
 
 ### 2026-07-17
 

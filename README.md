@@ -239,7 +239,11 @@ The model values above are low-cost defaults. Self-hosters can replace them with
 
 Guild IDs, channel IDs, timeout settings, ban settings, language, timezone, trigger words, and daily limits belong in PostgreSQL guild config, not `.env`.
 
-### 🗄️ PostgreSQL
+### 🗄️ Database Setup
+
+Follow the beginner guide for Supabase, other PostgreSQL cloud providers, or PostgreSQL on an Ubuntu/Debian VPS.
+
+[![Setup Database](https://img.shields.io/badge/Setup%20Database-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](./Setup%20database.md)
 
 Tables are created automatically at runtime. You can also apply `scripts/schema-postgres.sql` manually.
 

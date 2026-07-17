@@ -96,7 +96,7 @@ AI Verdict behavior:
 
 - Requires `OPENROUTER_API_KEY` or `GEMINI_API_KEY`.
 - Uses OpenRouter when configured; Gemini is used only when OpenRouter is not configured.
-- Defaults to OpenRouter model `xiaomi/mimo-v2.5` or Gemini model `gemini-2.5-flash`.
+- Defaults to OpenRouter model `xiaomi/mimo-v2.5` or Gemini model `gemini-2.5-flash`. These were chosen as the cheapest suitable image-capable options at the time of selection, not as requirements. You can replace either with any compatible model supported by that provider.
 - Analyzes only the first supported image from the message that created the Danger incident.
 - Returns a caption, OCR matches, and confidence score.
 - Matches OCR text against the guild's configured trigger words.
@@ -226,13 +226,15 @@ GEMINI_MODEL=gemini-2.5-flash
 AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS=
 ```
 
+The model values above are low-cost defaults. Self-hosters can replace them with any compatible image-capable OpenRouter or Gemini model.
+
 - `PG_SSL_MODE`: set to `disable` for PostgreSQL on local/VPS `127.0.0.1`; remote connections require SSL by default.
 - `BOT_POSTGRES_POOL_MAX`: maximum PostgreSQL pool size; defaults to `2`.
 - `ALLOWED_GUILD_IDS`: comma-separated guild allowlist. When empty, any guild may configure the bot, but both moderation features remain disabled until enabled through setup.
 - `OPENROUTER_API_KEY`: enables OpenRouter for AI Verdict.
-- `OPENROUTER_MODEL`: defaults to `xiaomi/mimo-v2.5`.
+- `OPENROUTER_MODEL`: defaults to the low-cost `xiaomi/mimo-v2.5`; set it to any compatible image-capable model available through OpenRouter.
 - `GEMINI_API_KEY`: enables Gemini when OpenRouter is not configured.
-- `GEMINI_MODEL`: defaults to `gemini-2.5-flash`.
+- `GEMINI_MODEL`: defaults to the low-cost `gemini-2.5-flash`; set it to any compatible Gemini model that accepts image input.
 - `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS`: comma-separated guild IDs that bypass only the AI Verdict daily quota.
 
 Guild IDs, channel IDs, timeout settings, ban settings, language, timezone, trigger words, and daily limits belong in PostgreSQL guild config, not `.env`.

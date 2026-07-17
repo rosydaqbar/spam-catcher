@@ -453,7 +453,7 @@ function createSetupCommandManager({ client, configStore }) {
       .setAccentColor(config.enabled ? 0x22c55e : isReady ? 0xf59e0b : 0xef4444)
       .addSectionComponents(
         buttonSection(
-          t('setup.openSettings'),
+          t('setup.spamSummary'),
           [
             `**${t('setup.status')}:** \`${statusLabel}\``,
             `**${t('setup.config')}:** \`${setupStatus(config)}\``,
@@ -627,10 +627,11 @@ function createSetupCommandManager({ client, configStore }) {
           [
             `**${t('setup.status')}:** \`${statusLabel}\``,
             `**Trigger:** \`first ${config.attachmentSpamThreshold}+ attachment message starts fixed ${formatMinutes(config.attachmentSpamWindowSeconds / 60, config.language)} window.\``,
-            `**Danger:** \`next ${config.attachmentSpamThreshold}+ attachment message by same user inside window.\``,
+            `**Danger:** \`first next ${config.attachmentSpamThreshold}+ attachment message creates one event; later matches update the same card.\``,
             `**Action:** \`set spammer=1, increment spammer_count, timeout for ${formatMinutes(config.attachmentSpamTimeoutMinutes, config.language)}, post Danger card to log channel.\``,
             `**${t('setup.log')}:** ${mentionChannelLocalized(config.logChannelId, t)}`,
-            '-# Watches all guild channels when enabled. Ignores bots, webhooks, and users bot cannot moderate.',
+            '-# Watches guild channels when enabled, excluding active trap channels. Ignores bots, webhooks, and users bot cannot moderate.',
+            '-# AI Verdict runs once per detection window. Follow-up messages update the existing event without repeating moderation.',
             `-# ${t('setup.independentDetection')}`,
             statusSuffix(statusMessage, config).trim(),
           ].filter(Boolean).join('\n'),
@@ -642,7 +643,7 @@ function createSetupCommandManager({ client, configStore }) {
       .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
       .addSectionComponents(
         buttonSection(
-          t('setup.aiVision'),
+          t('setup.aiVisionSummary'),
           [
             `**${t('setup.status')}:** \`${config.aiVisionSpamCheckEnabled ? t('setup.enabledStatus') : '⚪ OFF'}\``,
             `**${t('setup.aiVisionConfidence')}:** \`${Math.round(config.aiVisionConfidenceThreshold * 100)}%\``,
@@ -955,7 +956,7 @@ function createSetupCommandManager({ client, configStore }) {
       `Watches all guild channels for repeated attachment bursts from the same user. Triggers timeout, logs a Danger card, and DMs the user with an appeal button.`,
       '',
       `## AI Verdict Checker`,
-      `Optional add-on for Automatic Detection. Analyzes images using computer vision (OpenRouter/Gemini) before applying a timeout. Configurable trigger words, confidence threshold, and daily quota (resets by server timezone).`,
+      `Optional add-on for Automatic Detection. After immediate moderation, analyzes the trigger image once using computer vision (OpenRouter/Gemini) and updates the existing Danger card. Configurable trigger words, confidence threshold, and daily quota (resets by server timezone).`,
       '',
       `## Appeal System`,
       `Timed-out users receive a DM with an Appeal button. Their explanation appears on the review card for admins to review. Admins can remove timeout or ban directly from the card.`,

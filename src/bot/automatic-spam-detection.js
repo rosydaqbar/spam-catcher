@@ -33,11 +33,13 @@ const { createLogger } = require('../lib/logger');
 
 const BAN_PREFIX = 'autospam_ban';
 const REMOVE_TIMEOUT_PREFIX = 'autospam_remove_timeout';
+const DANGER_TITLE_EMOJI = '<a:siren_animated:1238040132066607177>';
 const CONFIG_CACHE_TTL_MS = 5000;
-const DISCORD_TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
+const DISCORD_TIMEOUT_MAX_MS = (28 * 24 * 60 * 60 * 1000) - 60_000;
 const AI_VISION_CAPTION_MAX_LENGTH = 220;
 const AI_VISION_OCR_MAX_LENGTH = 350;
 const AI_VISION_GUILD_CONCURRENCY = 2;
+const EVENT_MESSAGE_UPDATE_DEBOUNCE_MS = 750;
 
 function createAutomaticSpamDetectionManager({ client, configStore }) {
   const allowedGuildIds = parseAllowedGuildIds();
@@ -46,6 +48,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   const attachmentSessionByAuthor = new Map();
   const messageQueueByAuthor = new Map();
   const aiVisionQueueByGuild = new Map();
+  const eventMessageQueueByEvent = new Map();
+  const eventMessageUpdateTimerByEvent = new Map();
   const logger = createLogger('automatic-spam-detection');
   const visionChecker = createAiVisionChecker({
     openRouterApiKey: OPENROUTER_API_KEY,
@@ -147,7 +151,37 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return t('automatic.statusWaiting');
   }
 
+  function moderationHeaderStatus(event, t) {
+    if (event.status === 'banned') return t('automatic.headerModerationBanned');
+    if (event.status === 'timeout_removed') return t('automatic.headerModerationCleared');
+    if (event.status === 'user_unavailable') return t('automatic.headerModerationUnavailable');
+    if (event.status === 'ban_failed') return t('automatic.headerModerationBanFailed');
+    if (event.status === 'timeout_remove_failed') return t('automatic.headerModerationRemoveFailed');
+    if (event.timeoutStatus === 'failed') return t('automatic.headerModerationTimeoutFailed');
+    if (event.timeoutStatus === 'already_active') return t('automatic.headerModerationAlreadyActive');
+    if (event.timeoutStatus === 'applied') return t('automatic.headerModerationActive');
+    return t('automatic.headerModerationPending');
+  }
+
+  function aiVisionHeaderStatus(event, t) {
+    if (event.aiVisionStatus === 'pending') return t('automatic.headerAiPending');
+    if (event.aiVisionStatus === 'matched') return t('automatic.headerAiMatched');
+    if (event.aiVisionStatus === 'no_match') return t('automatic.headerAiNoMatch');
+    if (event.aiVisionStatus === 'low_confidence') return t('automatic.headerAiLowConfidence');
+    if (event.aiVisionStatus === 'failed') return t('automatic.headerAiFailed');
+    if (event.aiVisionStatus === 'daily_limit_reached') return t('automatic.headerAiDailyLimit');
+    return null;
+  }
+
+  function eventHeaderTitle(event, t) {
+    if (event.status === 'timeout_removed') {
+      return `📝 ${t('automatic.summaryTitle')}`;
+    }
+    return `${DANGER_TITLE_EMOJI} ${t('automatic.dangerTitle')}`;
+  }
+
   function aiVisionStatusText(event, t) {
+    if (event.aiVisionStatus === 'pending') return t('automatic.aiVisionPending');
     if (event.aiVisionStatus === 'matched') return t('automatic.aiVisionScamMatched');
     if (event.aiVisionStatus === 'no_match') return t('automatic.aiVisionNoMatch');
     if (event.aiVisionStatus === 'low_confidence') return t('automatic.aiVisionLowConfidence');
@@ -208,28 +242,49 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     ].filter(Boolean);
   }
 
+  function aggregateEvidenceLines(event, t) {
+    const channels = event.channels.length > 0 ? event.channels : [event.sourceChannelId];
+    const visibleChannels = channels.slice(0, 15);
+    const channelList = [
+      visibleChannels.map((channelId) => `<#${channelId}>`).join(', '),
+      channels.length > visibleChannels.length
+        ? t('automatic.andMoreChannels', { count: channels.length - visibleChannels.length })
+        : null,
+    ].filter(Boolean).join(' ');
+    const latestFollowupUrl = event.lastFollowupChannelId && event.lastFollowupMessageId
+      ? `https://discord.com/channels/${event.guildId}/${event.lastFollowupChannelId}/${event.lastFollowupMessageId}`
+      : null;
+    return [
+      `**${t('automatic.channelsInWindow')}:** ${channelList}`,
+      event.lastFollowupAt && event.lastFollowupChannelId
+        ? `**${t('automatic.latestFollowup')}:** <#${event.lastFollowupChannelId}> · \`${event.lastFollowupAttachmentCount || 0}\` ${t('automatic.attachments')} · ${timestamp(event.lastFollowupAt)}${latestFollowupUrl ? ` · [${t('automatic.openMessage')}](${latestFollowupUrl})` : ''}`
+        : null,
+    ].filter(Boolean);
+  }
+
   function buildDangerPayload(event, userState, config = {}) {
     const t = createTranslator(config.language);
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
     const channelUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}`;
-    const channelList = event.channels.length > 0
-      ? event.channels.map((channelId) => `<#${channelId}>`).join(', ')
-      : `<#${event.sourceChannelId}>`;
-      const timeoutLine = event.timeoutStatus === 'applied'
+    const timeoutLine = event.timeoutStatus === 'applied'
       ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutApplied')}\` ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'already_active'
         ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutAlreadyActive')}\` ${t('automatic.until')} ${timestamp(event.timeoutUntil)}`
       : event.timeoutStatus === 'failed'
         ? `**${t('automatic.timeout')}:** \`${t('automatic.timeoutFailed')}\` (\`${event.timeoutError || 'unknown error'}\`)`
         : `**${t('automatic.timeout')}:** \`${t('automatic.timeoutPending')}\``;
+    const aiHeaderStatus = aiVisionHeaderStatus(event, t);
 
     const container = new ContainerBuilder()
       .setAccentColor(eventAccentColor(event))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
-          `# ${t('automatic.dangerTitle')}`,
+          `# ${eventHeaderTitle(event, t)}`,
+          `### ${t('automatic.headerStatus')}:`,
+          moderationHeaderStatus(event, t),
+          aiHeaderStatus,
           `-# ${t('automatic.eventId')}: \`${event.id}\``,
-        ].join('\n'))
+        ].filter(Boolean).join('\n'))
       )
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
@@ -239,11 +294,10 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       ].join('\n'), t('automatic.openMessage'), messageUrl))
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
-        `### ${t('automatic.evidence')}`,
-        `**${t('automatic.sourceChannel')}:** <#${event.sourceChannelId}>`,
-        `**${t('automatic.attachmentsOnTrigger')}:** \`${event.attachmentCount}\``,
-        `**${t('automatic.channelsInWindow')}:** ${channelList}`,
-      ].join('\n'), t('automatic.openChannel'), channelUrl))
+         `### ${t('automatic.evidence')}`,
+         `**${t('automatic.sourceChannel')}:** <#${event.sourceChannelId}>`,
+         ...aggregateEvidenceLines(event, t),
+       ].filter(Boolean).join('\n'), t('automatic.openChannel'), channelUrl))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
           `### ${t('automatic.window')}`,
@@ -321,15 +375,36 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   }
 
   async function loadSessionFromDb(guildId, userId, config, messageAtMs) {
-    const row = await configStore.getAutomaticSpamDetectionUser(guildId, userId).catch(() => null);
+    const messageAt = new Date(messageAtMs);
+    const windowEvent = await configStore.getAutomaticSpamDetectionWindowEventForMessage(
+      guildId,
+      userId,
+      messageAt
+    );
+    if (windowEvent) {
+      return {
+        startedAtMs: windowEvent.windowStartedAt.getTime(),
+        windowExpiresAtMs: windowEvent.windowExpiresAt.getTime(),
+        windowEventId: windowEvent.id,
+        events: windowEvent.channels.map((channelId) => ({ channelId })),
+      };
+    }
+
+    const row = await configStore.getAutomaticSpamDetectionUser(guildId, userId);
     if (!row?.lastAlertAt) return null;
 
     const startedAtMs = row.lastAlertAt.getTime();
     const windowMs = config.attachmentSpamWindowSeconds * 1000;
-    if (!Number.isFinite(startedAtMs) || messageAtMs - startedAtMs > windowMs) return null;
+    const persistedWindowExpiresAtMs = row.lastAlertWindowExpiresAt?.getTime();
+    const windowExpiresAtMs = Number.isFinite(persistedWindowExpiresAtMs)
+      ? persistedWindowExpiresAtMs
+      : startedAtMs + windowMs;
+    if (!Number.isFinite(startedAtMs) || messageAtMs < startedAtMs || messageAtMs > windowExpiresAtMs) return null;
 
     return {
       startedAtMs,
+      windowExpiresAtMs,
+      windowEventId: null,
       events: [
         {
           messageId: row.lastMessageId,
@@ -342,7 +417,11 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
   }
 
   async function timeoutUser(guild, member, event, config) {
-    const timeoutMs = Math.min(config.attachmentSpamTimeoutMinutes * 60 * 1000, DISCORD_TIMEOUT_MAX_MS);
+    const configuredTimeoutMs = Number(config.attachmentSpamTimeoutMinutes) * 60 * 1000;
+    const timeoutMs = Math.min(
+      Number.isFinite(configuredTimeoutMs) ? Math.max(60_000, Math.floor(configuredTimeoutMs)) : 60_000,
+      DISCORD_TIMEOUT_MAX_MS
+    );
     const timeoutUntil = new Date(Date.now() + timeoutMs);
     const alreadyTimedOutUntil = existingTimeoutUntil(member);
     if (alreadyTimedOutUntil) {
@@ -406,11 +485,11 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       )
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
-        `### ${t('automatic.incident')}`,
-        `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`,
-        `**${t('automatic.triggerMessage')}:** ${messageUrl}`,
-        `**${t('automatic.attachmentsOnTrigger')}:** \`${event.attachmentCount}\``,
-      ].join('\n'), t('automatic.openMessage'), messageUrl));
+         `### ${t('automatic.incident')}`,
+         `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`,
+         `**${t('automatic.triggerMessage')}:** ${messageUrl}`,
+         ...aggregateEvidenceLines(event, t),
+       ].join('\n'), t('automatic.openMessage'), messageUrl));
 
     const lines = aiVisionLines(event, t);
     if (lines) {
@@ -477,13 +556,15 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     });
   }
 
-  async function sendOrUpdateDangerMessage(event) {
+  async function updateStoredDangerMessage(event) {
     if (!event?.reviewChannelId || !event.reviewMessageId) return null;
     const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
     if (!guild) return null;
-    const channel = await guild.channels.fetch(event.reviewChannelId).catch(() => null);
+    const channel = guild.channels.cache.get(event.reviewChannelId)
+      || await guild.channels.fetch(event.reviewChannelId).catch(() => null);
     if (!channel?.isTextBased()) return null;
-    const message = await channel.messages.fetch(event.reviewMessageId).catch(() => null);
+    const message = channel.messages.cache.get(event.reviewMessageId)
+      || await channel.messages.fetch(event.reviewMessageId).catch(() => null);
     if (!message) return null;
     const userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => null);
     const config = await getConfig(event.guildId).catch(() => ({}));
@@ -497,6 +578,76 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     });
   }
 
+  async function updateStoredAiVisionWarningMessage(event) {
+    if (!event?.reviewChannelId || !event.reviewMessageId) return null;
+    const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
+    if (!guild) return null;
+    const channel = guild.channels.cache.get(event.reviewChannelId)
+      || await guild.channels.fetch(event.reviewChannelId).catch(() => null);
+    if (!channel?.isTextBased()) return null;
+    const message = channel.messages.cache.get(event.reviewMessageId)
+      || await channel.messages.fetch(event.reviewMessageId).catch(() => null);
+    if (!message) return null;
+    const config = await getConfig(event.guildId).catch(() => ({}));
+    return message.edit(buildAiVisionWarningPayload(event, config)).catch((error) => {
+      logger.error('Failed to update AI Verdict warning card', {
+        guildId: event.guildId,
+        eventId: event.id,
+        error: safeError(error),
+      });
+      return null;
+    });
+  }
+
+  async function sendOrUpdateEventMessage(event) {
+    const eventId = Number(event?.id);
+    if (!Number.isFinite(eventId)) return null;
+
+    const previous = eventMessageQueueByEvent.get(eventId) || Promise.resolve();
+    const current = previous
+      .catch(() => null)
+      .then(async () => {
+        const latestEvent = await configStore.getAutomaticSpamDetectionEventById(eventId).catch((error) => {
+          logger.error('Failed to load Automatic Spam Detection event for card update', {
+            eventId,
+            error: safeError(error),
+          });
+          return null;
+        });
+        if (!latestEvent) return null;
+        return latestEvent.dangerConfirmedAt
+          ? updateStoredDangerMessage(latestEvent)
+          : updateStoredAiVisionWarningMessage(latestEvent);
+      });
+    eventMessageQueueByEvent.set(eventId, current);
+    try {
+      return await current;
+    } finally {
+      if (eventMessageQueueByEvent.get(eventId) === current) {
+        eventMessageQueueByEvent.delete(eventId);
+      }
+    }
+  }
+
+  function scheduleEventMessageUpdate(event) {
+    const eventId = Number(event?.id);
+    if (!Number.isFinite(eventId)) return;
+    const existingTimer = eventMessageUpdateTimerByEvent.get(eventId);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timer = setTimeout(() => {
+      eventMessageUpdateTimerByEvent.delete(eventId);
+      sendOrUpdateEventMessage(event).catch((error) => {
+        logger.error('Failed to run deferred Automatic Spam Detection card update', {
+          eventId,
+          error: safeError(error),
+        });
+      });
+    }, EVENT_MESSAGE_UPDATE_DEBOUNCE_MS);
+    timer.unref?.();
+    eventMessageUpdateTimerByEvent.set(eventId, timer);
+  }
+
   const moderationWorkflow = createModerationWorkflow({
     client,
     source: 'autospam',
@@ -504,16 +655,17 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     isGuildAllowed,
     loadEvent: (eventId) => configStore.getAutomaticSpamDetectionEventById(eventId),
     saveAppeal: (eventId, message) => configStore.markAutomaticSpamDetectionAppealed(eventId, message),
-    updateReviewMessage: sendOrUpdateDangerMessage,
+    updateReviewMessage: sendOrUpdateEventMessage,
   });
 
-  async function recordAlert(message, config, messageAt) {
+  async function recordAlert(message, config, messageAt, windowExpiresAt) {
     await configStore.recordAutomaticSpamDetectionAlert({
       guildId: message.guild.id,
       userId: message.author.id,
       channelId: message.channelId,
       messageId: message.id,
       alertAt: messageAt,
+      windowExpiresAt,
     });
     logger.info('Attachment spam alert recorded', {
       guildId: message.guild.id,
@@ -524,8 +676,8 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     });
   }
 
-  async function createDetectionEvent({ message, danger, status = 'danger', aiVision = {} }) {
-    return configStore.createAutomaticSpamDetectionEvent({
+  async function claimDetectionEvent({ message, danger }) {
+    return configStore.claimAutomaticSpamDetectionWindowEvent({
       guildId: message.guild.id,
       userId: message.author.id,
       sourceChannelId: message.channelId,
@@ -535,86 +687,139 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       channels: danger.channels,
       windowStartedAt: danger.windowStartedAt,
       windowExpiresAt: danger.windowExpiresAt,
-      status,
-      ...aiVision,
     });
   }
 
-  async function handleConfirmedDanger({ message, member, config, danger, aiVision = {} }) {
+  async function finalizeDetectionEvent(event, { status, dangerConfirmedAt = null, aiVision = {} }) {
+    const updated = await configStore.finalizeAutomaticSpamDetectionWindowEvent(event.id, {
+      status,
+      dangerConfirmedAt,
+      ...aiVision,
+    });
+    if (!updated) throw new Error(`Automatic Spam Detection window event ${event.id} could not be finalized.`);
+    return updated;
+  }
+
+  async function handleConfirmedDanger({ message, member, config, event, aiVision = {} }) {
+    const dangerConfirmedAt = message.createdAt || new Date();
+    let updatedEvent = await finalizeDetectionEvent(event, {
+      status: 'danger',
+      dangerConfirmedAt,
+      aiVision,
+    });
     let userState = await configStore.markAutomaticSpamDetectionDangerUser({
       guildId: message.guild.id,
       userId: message.author.id,
       channelId: message.channelId,
       messageId: message.id,
-      dangerAt: message.createdAt || new Date(),
+      dangerAt: dangerConfirmedAt,
     });
 
-    let event = await createDetectionEvent({ message, danger, status: 'danger', aiVision });
-
-    const timeoutResult = await timeoutUser(message.guild, member, event, config);
-    event = await configStore.updateAutomaticSpamDetectionTimeout(event.id, timeoutResult).catch(() => ({
-      ...event,
+    const timeoutResult = await timeoutUser(message.guild, member, updatedEvent, config);
+    updatedEvent = await configStore.updateAutomaticSpamDetectionTimeout(updatedEvent.id, timeoutResult).catch(() => ({
+      ...updatedEvent,
       ...timeoutResult,
     }));
-    userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => userState);
+    userState = await configStore.getAutomaticSpamDetectionUser(updatedEvent.guildId, updatedEvent.userId).catch(() => userState);
 
-    await moderationWorkflow.sendTimeoutDm({ userId: message.author.id, guildName: message.guild.name, eventId: event.id, config });
+    await moderationWorkflow.sendTimeoutDm({ userId: message.author.id, guildName: message.guild.name, eventId: updatedEvent.id, config });
 
-    await sendDangerMessage(message.guild, config, event, userState);
+    const storedEvent = await sendDangerMessage(message.guild, config, updatedEvent, userState);
     logger.warn('Attachment spam danger recorded', {
       guildId: message.guild.id,
       channelId: message.channelId,
       userId: message.author.id,
-      eventId: event.id,
-      timeoutStatus: event.timeoutStatus,
+      eventId: updatedEvent.id,
+      timeoutStatus: updatedEvent.timeoutStatus,
     });
+    return storedEvent || updatedEvent;
   }
 
-  async function handleAiVisionDanger({ message, member, config, danger }) {
+  async function recordWindowFollowup(message, eventId, messageAt, config) {
+    let updatedEvent = await configStore.appendAutomaticSpamDetectionWindowFollowup({
+      eventId,
+      guildId: message.guild.id,
+      userId: message.author.id,
+      channelId: message.channelId,
+      messageId: message.id,
+      attachmentCount: message.attachments?.size || 0,
+      messageAt,
+    });
+    if (!updatedEvent) return null;
+
+    if (
+      updatedEvent.dangerConfirmedAt
+      && updatedEvent.timeoutStatus === 'failed'
+      && String(updatedEvent.timeoutError || '').includes('INVALID_COMMUNICATION_DISABLED_TIMESTAMP')
+    ) {
+      const member = await getModeratableMember(message);
+      if (member) {
+        const timeoutResult = await timeoutUser(message.guild, member, updatedEvent, config);
+        updatedEvent = await configStore.updateAutomaticSpamDetectionTimeout(updatedEvent.id, timeoutResult)
+          .catch(() => ({ ...updatedEvent, ...timeoutResult }));
+      }
+    }
+
+    scheduleEventMessageUpdate(updatedEvent);
+    logger.info('Attachment spam follow-up added to existing detection event', {
+      guildId: message.guild.id,
+      channelId: message.channelId,
+      userId: message.author.id,
+      eventId: updatedEvent.id,
+      followupMessageCount: updatedEvent.followupMessageCount,
+      followupAttachmentCount: updatedEvent.followupAttachmentCount,
+    });
+    return updatedEvent;
+  }
+
+  async function eventWindowContainsMessage(eventId, messageAtMs) {
+    const event = await configStore.getAutomaticSpamDetectionEventById(eventId);
+    if (!event?.windowStartedAt || !event.windowExpiresAt) return false;
+    return messageAtMs >= event.windowStartedAt.getTime()
+      && messageAtMs <= event.windowExpiresAt.getTime();
+  }
+
+  async function saveAiVisionResult(event, aiVision) {
+    const updatedEvent = await configStore.updateAutomaticSpamDetectionAiVisionResult(event.id, aiVision);
+    if (!updatedEvent) throw new Error(`Automatic Spam Detection event ${event.id} AI result could not be saved.`);
+    await sendOrUpdateEventMessage(updatedEvent);
+    return updatedEvent;
+  }
+
+  async function handleAiVisionEvidence({ message, config, event }) {
     const checkedAt = new Date();
     const image = firstSupportedImageAttachment(message.attachments);
     const model = visionChecker?.model || OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+    let quotaUsageDate = null;
+    let shouldSendResetNotice = false;
 
     if (!visionChecker) {
-      const event = await createDetectionEvent({
-        message,
-        danger,
-        status: 'ai_analysis_failed',
-        aiVision: {
-          aiVisionStatus: 'failed',
-          aiVisionModel: model,
-          aiVisionError: 'OPENROUTER_API_KEY or GEMINI_API_KEY is not configured.',
-          aiVisionCheckedAt: checkedAt,
-        },
+      return saveAiVisionResult(event, {
+        aiVisionStatus: 'failed',
+        aiVisionModel: model,
+        aiVisionError: 'OPENROUTER_API_KEY or GEMINI_API_KEY is not configured.',
+        aiVisionCheckedAt: checkedAt,
       });
-      await sendAiVisionWarningMessage(message.guild, config, event);
-      return;
     }
 
     if (!image) {
-      const event = await createDetectionEvent({
-        message,
-        danger,
-        status: 'ai_analysis_failed',
-        aiVision: {
-          aiVisionStatus: 'failed',
-          aiVisionModel: model,
-          aiVisionError: 'No supported image attachment found on trigger message.',
-          aiVisionCheckedAt: checkedAt,
-        },
+      return saveAiVisionResult(event, {
+        aiVisionStatus: 'failed',
+        aiVisionModel: model,
+        aiVisionError: 'No supported image attachment found on trigger message.',
+        aiVisionCheckedAt: checkedAt,
       });
-      await sendAiVisionWarningMessage(message.guild, config, event);
-      return;
     }
 
     if (!aiVisionDailyLimitBypassGuildIds.has(message.guild.id)) {
       const usageDate = localDateString(checkedAt, config.timezone);
-      const usage = await configStore.tryConsumeAiVisionDailyUsage(
+      const usage = await configStore.reserveAiVisionDailyUsageForEvent(
+        event.id,
         message.guild.id,
         usageDate,
         config.aiVisionDailyLimit
       ).catch((error) => {
-        logger.error('Failed to consume AI Verdict daily usage', {
+        logger.error('Failed to reserve AI Verdict daily usage', {
           guildId: message.guild.id,
           usageDate,
           error: safeError(error),
@@ -622,32 +827,26 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         return null;
       });
 
+      const reservedUsageDate = usage?.usageDate || usageDate;
       if (!usage?.allowed) {
-        const event = await createDetectionEvent({
-          message,
-          danger,
-          status: 'ai_daily_limit_reached',
-          aiVision: {
-            aiVisionStatus: 'daily_limit_reached',
-            aiVisionModel: model,
-            aiVisionImageUrl: image.url,
-            aiVisionError: `Daily AI Verdict limit reached for ${usageDate} (${usage?.usedCount || config.aiVisionDailyLimit}/${usage?.limit || config.aiVisionDailyLimit}) in ${config.timezone}.`,
-            aiVisionCheckedAt: checkedAt,
-          },
+        const updatedEvent = await saveAiVisionResult(event, {
+          aiVisionStatus: 'daily_limit_reached',
+          aiVisionModel: model,
+          aiVisionImageUrl: image.url,
+          aiVisionError: `Daily AI Verdict limit reached for ${reservedUsageDate} (${usage?.usedCount || config.aiVisionDailyLimit}/${usage?.limit || config.aiVisionDailyLimit}) in ${config.timezone}.`,
+          aiVisionCheckedAt: checkedAt,
         });
-        await sendAiVisionWarningMessage(message.guild, config, event);
         logger.warn('AI Verdict daily limit reached', {
           guildId: message.guild.id,
-          usageDate,
+          usageDate: reservedUsageDate,
           timezone: config.timezone,
           limit: usage?.limit || config.aiVisionDailyLimit,
         });
-        return;
+        return updatedEvent;
       }
 
-      if (usage.usedCount === 1) {
-        await sendAiVisionDailyLimitResetMessage(message.guild, config, usageDate);
-      }
+      quotaUsageDate = reservedUsageDate;
+      shouldSendResetNotice = usage.usedCount === 1;
     } else {
       logger.info('AI Verdict daily limit bypassed for allowlisted guild', {
         guildId: message.guild.id,
@@ -660,6 +859,36 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         triggerWords: config.aiVisionTriggerWords,
       });
     } catch (error) {
+      let quotaRefunded = false;
+      if (quotaUsageDate && error?.unbilledAiVision) {
+        const refund = await configStore.refundAiVisionDailyUsageForEvent(
+          event.id,
+          message.guild.id,
+          quotaUsageDate
+        ).catch((refundError) => {
+          logger.error('Failed to refund unbilled AI Verdict daily usage', {
+            guildId: message.guild.id,
+            userId: message.author.id,
+            eventId: event.id,
+            usageDate: quotaUsageDate,
+            error: safeError(refundError),
+          });
+          return null;
+        });
+        quotaRefunded = refund?.refunded === true;
+        if (quotaRefunded) {
+          logger.info('Refunded AI Verdict daily usage after unbilled provider rejection', {
+            guildId: message.guild.id,
+            userId: message.author.id,
+            eventId: event.id,
+            usageDate: quotaUsageDate,
+            usedCount: refund.usedCount,
+          });
+        }
+      }
+      if (shouldSendResetNotice && !quotaRefunded) {
+        await sendAiVisionDailyLimitResetMessage(message.guild, config, quotaUsageDate);
+      }
       logger.warn('AI Verdict image analysis failed', {
         guildId: message.guild.id,
         channelId: message.channelId,
@@ -673,20 +902,17 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         firstRawAiResponse: error?.firstRawAiResponse || null,
         firstCleanedAiResponse: error?.firstCleanedAiResponse || null,
       });
-      const event = await createDetectionEvent({
-        message,
-        danger,
-        status: 'ai_analysis_failed',
-        aiVision: {
-          aiVisionStatus: 'failed',
-          aiVisionModel: model,
-          aiVisionImageUrl: image.url,
-          aiVisionError: safeError(error),
-          aiVisionCheckedAt: checkedAt,
-        },
+      return saveAiVisionResult(event, {
+        aiVisionStatus: 'failed',
+        aiVisionModel: model,
+        aiVisionImageUrl: image.url,
+        aiVisionError: safeError(error),
+        aiVisionCheckedAt: checkedAt,
       });
-      await sendAiVisionWarningMessage(message.guild, config, event);
-      return;
+    }
+
+    if (shouldSendResetNotice) {
+      await sendAiVisionDailyLimitResetMessage(message.guild, config, quotaUsageDate);
     }
 
     const decision = decideScamFromVision(
@@ -704,52 +930,49 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       aiVisionCheckedAt: checkedAt,
     };
 
-    if (decision.isScam) {
-      await handleConfirmedDanger({
-        message,
-        member,
-        config,
-        danger,
-        aiVision: {
-          ...baseAiVision,
-          aiVisionStatus: 'matched',
-        },
-      });
-      return;
-    }
-
-    const status = decision.hasEnoughConfidence ? 'ai_no_match' : 'ai_low_confidence';
     const aiVisionStatus = decision.hasEnoughConfidence ? 'no_match' : 'low_confidence';
-    const event = await createDetectionEvent({
-      message,
-      danger,
-      status,
-      aiVision: {
-        ...baseAiVision,
-        aiVisionStatus,
-      },
+    const updatedEvent = await saveAiVisionResult(event, {
+      ...baseAiVision,
+      aiVisionStatus: decision.isScam ? 'matched' : aiVisionStatus,
     });
 
-    if (!decision.hasEnoughConfidence) {
-      await sendAiVisionWarningMessage(message.guild, config, event);
-      return;
-    }
-
-    logger.info('AI Verdict checked trigger message and found no scam keywords', {
+    logger.info('AI Verdict evidence added to Automatic Spam Detection event', {
       guildId: message.guild.id,
       channelId: message.channelId,
       userId: message.author.id,
-      eventId: event.id,
+      eventId: updatedEvent.id,
+      verdict: updatedEvent.aiVisionStatus,
       confidence: decision.confidence,
     });
+    return updatedEvent;
   }
 
-  async function handleDanger({ message, member, config, danger }) {
+  async function handleDanger({ message, member, config, event }) {
+    const model = visionChecker?.model || OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+    const dangerEvent = await handleConfirmedDanger({
+      message,
+      member,
+      config,
+      event,
+      aiVision: config.aiVisionSpamCheckEnabled
+        ? { aiVisionStatus: 'pending', aiVisionModel: model }
+        : {},
+    });
     if (config.aiVisionSpamCheckEnabled) {
-      await runQueuedAiVision(message.guild.id, () => handleAiVisionDanger({ message, member, config, danger }));
-      return;
+      runQueuedAiVision(
+        message.guild.id,
+        () => handleAiVisionEvidence({ message, config, event: dangerEvent })
+      ).catch((error) => {
+        logger.error('Background AI Verdict processing failed', {
+          guildId: message.guild.id,
+          channelId: message.channelId,
+          userId: message.author.id,
+          eventId: dangerEvent.id,
+          error: safeError(error),
+        });
+      });
     }
-    await handleConfirmedDanger({ message, member, config, danger });
+    return dangerEvent;
   }
 
   async function handleQueuedMessage(message) {
@@ -764,12 +987,10 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       return null;
     });
     if (!config?.automaticSpamDetectionEnabled) return;
+    if (config.enabled && config.channelIds.includes(message.channelId)) return;
 
     const attachmentCount = message.attachments?.size || 0;
     if (attachmentCount < config.attachmentSpamThreshold) return;
-
-    const member = await getModeratableMember(message);
-    if (!member) return;
 
     const messageAt = message.createdAt || new Date();
     const messageAtMs = messageAt.getTime();
@@ -787,31 +1008,69 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       timestampMs: messageAtMs,
     };
 
-    if (session && messageAtMs - session.startedAtMs <= windowMs) {
+    const windowExpiresAtMs = session?.windowExpiresAtMs || (session ? session.startedAtMs + windowMs : 0);
+    let hasActiveSession = Boolean(
+      session
+      && messageAtMs >= session.startedAtMs
+      && messageAtMs <= windowExpiresAtMs
+    );
+    if (hasActiveSession && session.windowEventId) {
+      const updatedEvent = await recordWindowFollowup(message, session.windowEventId, messageAt, config);
+      if (updatedEvent) return;
+      if (await eventWindowContainsMessage(session.windowEventId, messageAtMs)) return;
+      attachmentSessionByAuthor.delete(key);
+      session = null;
+      hasActiveSession = false;
+    }
+
+    const member = await getModeratableMember(message);
+    if (!member) return;
+
+    if (hasActiveSession) {
       const channels = [...new Set([...session.events.map((item) => item.channelId), message.channelId].filter(Boolean))];
       session.events.push(currentEvent);
       attachmentSessionByAuthor.set(key, session);
+      const danger = {
+        reason: channels.length >= 2
+          ? 'same_author_2plus_attachments_in_2plus_channels'
+          : 'same_author_repeated_2plus_attachments_in_window',
+        channels,
+        windowStartedAt: new Date(session.startedAtMs),
+        windowExpiresAt: new Date(windowExpiresAtMs),
+      };
+      const claim = await claimDetectionEvent({ message, danger });
+      if (!claim.event) throw new Error('Automatic Spam Detection window event could not be claimed.');
+      session.windowEventId = claim.event.id;
+      if (!claim.claimed) {
+        const updatedEvent = await recordWindowFollowup(message, claim.event.id, messageAt, config);
+        if (updatedEvent || await eventWindowContainsMessage(claim.event.id, messageAtMs)) return;
+        attachmentSessionByAuthor.delete(key);
+        attachmentSessionByAuthor.set(key, {
+          startedAtMs: messageAtMs,
+          windowExpiresAtMs: messageAtMs + windowMs,
+          windowEventId: null,
+          events: [currentEvent],
+        });
+        await recordAlert(message, config, messageAt, new Date(messageAtMs + windowMs));
+        return;
+      }
+
       await handleDanger({
         message,
         member,
         config,
-        danger: {
-          reason: channels.length >= 2
-            ? 'same_author_2plus_attachments_in_2plus_channels'
-            : 'same_author_repeated_2plus_attachments_in_window',
-          channels,
-          windowStartedAt: new Date(session.startedAtMs),
-          windowExpiresAt: new Date(session.startedAtMs + windowMs),
-        },
+        event: claim.event,
       });
       return;
     }
 
     attachmentSessionByAuthor.set(key, {
       startedAtMs: messageAtMs,
+      windowExpiresAtMs: messageAtMs + windowMs,
+      windowEventId: null,
       events: [currentEvent],
     });
-    await recordAlert(message, config, messageAt);
+    await recordAlert(message, config, messageAt, new Date(messageAtMs + windowMs));
   }
 
   async function handleMessage(message) {
@@ -849,16 +1108,34 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
     return event;
   }
 
-  async function editDangerMessage(interaction, event) {
-    const userState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => null);
-    const config = await getConfig(event.guildId).catch(() => ({}));
-    await interaction.editReply(buildDangerPayload(event, userState, config)).catch((error) => {
-      logger.error('Failed to edit Automatic Spam Detection danger card', {
+  async function requireLatestOpenDanger(interaction, event) {
+    const latest = await configStore.getLatestOpenAutomaticSpamDetectionDangerEvent(
+      event.guildId,
+      event.userId
+    ).catch((error) => {
+      logger.error('Failed to check latest Automatic Spam Detection danger event', {
         guildId: event.guildId,
+        userId: event.userId,
         eventId: event.id,
         error: safeError(error),
       });
+      return undefined;
     });
+    if (latest === undefined) {
+      await interaction.reply({
+        content: 'Could not verify the latest Automatic Spam Detection event. Try again.',
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => null);
+      return false;
+    }
+    if (latest && latest.id !== event.id) {
+      await interaction.reply({
+        content: `A newer Automatic Spam Detection event (\`${latest.id}\`) is still active for this user. Resolve the newer card instead.`,
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => null);
+      return false;
+    }
+    return true;
   }
 
   async function handleRemoveTimeout(interaction) {
@@ -872,6 +1149,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       await interaction.reply({ content: 'This Automatic Spam Detection event is already resolved.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
+    if (!await requireLatestOpenDanger(interaction, event)) return;
 
     await interaction.deferUpdate().catch(() => null);
     let updated = event;
@@ -882,19 +1160,30 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         throw error;
       });
       if (!member) {
-        await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
-        updated = await configStore.updateAutomaticSpamDetectionDecision(
+        updated = await configStore.resolveAutomaticSpamDetectionEventAndCloseWindow(
           event.id,
-          'user_unavailable',
-          interaction.user.id,
-          'User is no longer in this guild.'
+          {
+            guildId: event.guildId,
+            userId: event.userId,
+            status: 'user_unavailable',
+            decidedBy: interaction.user.id,
+            decisionError: 'User is no longer in this guild.',
+          }
         );
-        await editDangerMessage(interaction, updated || event);
+        if (!updated) throw new Error('A newer Automatic Spam Detection danger event is active.');
+        attachmentSessionByAuthor.delete(authorKey(event.guildId, event.userId));
+        await sendOrUpdateEventMessage(updated || event);
         return;
       }
       await member.timeout(null, `Automatic Spam Detection timeout removed by ${interaction.user.id}`);
-      await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
-      updated = await configStore.updateAutomaticSpamDetectionDecision(event.id, 'timeout_removed', interaction.user.id);
+      updated = await configStore.resolveAutomaticSpamDetectionEventAndCloseWindow(event.id, {
+        guildId: event.guildId,
+        userId: event.userId,
+        status: 'timeout_removed',
+        decidedBy: interaction.user.id,
+      });
+      if (!updated) throw new Error('A newer Automatic Spam Detection danger event is active.');
+      attachmentSessionByAuthor.delete(authorKey(event.guildId, event.userId));
     } catch (error) {
       updated = await configStore.updateAutomaticSpamDetectionDecision(
         event.id,
@@ -903,7 +1192,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         safeError(error)
       ).catch(() => ({ ...event, status: 'timeout_remove_failed', decidedBy: interaction.user.id, decisionError: safeError(error) }));
     }
-    await editDangerMessage(interaction, updated || event);
+    await sendOrUpdateEventMessage(updated || event);
   }
 
   async function handleBanUser(interaction) {
@@ -917,6 +1206,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
       await interaction.reply({ content: 'This Automatic Spam Detection event is already resolved.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
+    if (!await requireLatestOpenDanger(interaction, event)) return;
 
     await interaction.deferUpdate().catch(() => null);
     let updated = event;
@@ -926,8 +1216,14 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         reason: `Automatic Spam Detection event ${event.id}`,
         deleteMessageSeconds: 0,
       });
-      await configStore.resetAutomaticSpamDetectionSpammer(event.guildId, event.userId);
-      updated = await configStore.updateAutomaticSpamDetectionDecision(event.id, 'banned', interaction.user.id);
+      updated = await configStore.resolveAutomaticSpamDetectionEventAndCloseWindow(event.id, {
+        guildId: event.guildId,
+        userId: event.userId,
+        status: 'banned',
+        decidedBy: interaction.user.id,
+      });
+      if (!updated) throw new Error('A newer Automatic Spam Detection danger event is active.');
+      attachmentSessionByAuthor.delete(authorKey(event.guildId, event.userId));
     } catch (error) {
       updated = await configStore.updateAutomaticSpamDetectionDecision(
         event.id,
@@ -936,7 +1232,7 @@ function createAutomaticSpamDetectionManager({ client, configStore }) {
         safeError(error)
       ).catch(() => ({ ...event, status: 'ban_failed', decidedBy: interaction.user.id, decisionError: safeError(error) }));
     }
-    await editDangerMessage(interaction, updated || event);
+    await sendOrUpdateEventMessage(updated || event);
   }
 
   async function handleInteraction(interaction) {

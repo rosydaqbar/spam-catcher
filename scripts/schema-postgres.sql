@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_users (
   spammer INTEGER NOT NULL DEFAULT 0,
   spammer_count INTEGER NOT NULL DEFAULT 0,
   last_alert_at TIMESTAMPTZ,
+  last_alert_window_expires_at TIMESTAMPTZ,
   last_danger_at TIMESTAMPTZ,
   last_channel_id TEXT,
   last_message_id TEXT,
@@ -61,6 +62,14 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   timeout_status TEXT NOT NULL DEFAULT 'pending',
   timeout_error TEXT,
   status TEXT NOT NULL DEFAULT 'danger',
+  window_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+  danger_confirmed_at TIMESTAMPTZ,
+  followup_message_count INTEGER NOT NULL DEFAULT 0,
+  followup_attachment_count INTEGER NOT NULL DEFAULT 0,
+  last_followup_at TIMESTAMPTZ,
+  last_followup_channel_id TEXT,
+  last_followup_message_id TEXT,
+  last_followup_attachment_count INTEGER,
   appeal_message TEXT,
   ai_vision_status TEXT,
   ai_vision_model TEXT,
@@ -87,6 +96,27 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage (
   PRIMARY KEY (guild_id, usage_date)
 );
 
+CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage_reservations (
+  event_id BIGINT PRIMARY KEY REFERENCES automatic_spam_detection_events(id) ON DELETE CASCADE,
+  guild_id TEXT NOT NULL,
+  usage_date DATE NOT NULL,
+  allowed BOOLEAN NOT NULL DEFAULT FALSE,
+  used_count_after INTEGER NOT NULL DEFAULT 0,
+  refunded BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS automatic_spam_detection_event_messages (
+  event_id BIGINT NOT NULL REFERENCES automatic_spam_detection_events(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  attachment_count INTEGER NOT NULL,
+  message_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (event_id, message_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_created
   ON spam_catcher_events(guild_id, created_at DESC);
 
@@ -104,3 +134,13 @@ CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created
 
 CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message
   ON automatic_spam_detection_events(review_channel_id, review_message_id);
+
+CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_window
+  ON automatic_spam_detection_events(guild_id, user_id, window_expires_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_status_window
+  ON automatic_spam_detection_events(status, guild_id, user_id, window_started_at, window_expires_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_window_claim
+  ON automatic_spam_detection_events(guild_id, user_id, window_started_at)
+  WHERE window_claimed = TRUE;

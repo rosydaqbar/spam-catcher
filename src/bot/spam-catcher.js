@@ -20,7 +20,7 @@ const REMOVE_TIMEOUT_CONFIRM_PREFIX = 'spamcatcher_remove_timeout_confirm';
 const REMOVE_TIMEOUT_CANCEL_PREFIX = 'spamcatcher_remove_timeout_cancel';
 const DELAYED_BAN_INTERVAL_MS = 30 * 1000;
 const CONFIG_CACHE_TTL_MS = 5000;
-const DISCORD_TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
+const DISCORD_TIMEOUT_MAX_MS = (28 * 24 * 60 * 60 * 1000) - 60_000;
 
 function createSpamCatcherManager({ client, configStore }) {
   const allowedGuildIds = parseAllowedGuildIds();
@@ -379,7 +379,11 @@ function createSpamCatcherManager({ client, configStore }) {
       return;
     }
 
-    const timeoutMs = Math.min(config.timeoutMinutes * 60 * 1000, DISCORD_TIMEOUT_MAX_MS);
+    const configuredTimeoutMs = Number(config.timeoutMinutes) * 60 * 1000;
+    const timeoutMs = Math.min(
+      Number.isFinite(configuredTimeoutMs) ? Math.max(60_000, Math.floor(configuredTimeoutMs)) : 60_000,
+      DISCORD_TIMEOUT_MAX_MS
+    );
     let timeoutError = null;
     await member.timeout(timeoutMs, `Spam Catcher event ${event.id}`).catch((error) => {
       timeoutError = error;

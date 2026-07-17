@@ -5,7 +5,6 @@ const {
   ContainerBuilder,
   MessageFlags,
   ModalBuilder,
-  SectionBuilder,
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextInputBuilder,
@@ -71,15 +70,11 @@ function createModerationWorkflow({
         ].join('\n'))
       )
       .addSeparatorComponents(divider())
-      .addSectionComponents(
-        new SectionBuilder()
-          .addTextDisplayComponents(
-            new TextDisplayBuilder().setContent([
-              `### ${t('moderation.timeoutDmReasonTitle')}`,
-              t(timeoutReasonKey(alreadyTimedOut), { guild: guildName }),
-            ].join('\n'))
-          )
-          .setButtonAccessory(appealButtonComponent(eventId, t))
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `### ${t('moderation.timeoutDmReasonTitle')}`,
+          t(timeoutReasonKey(alreadyTimedOut), { guild: guildName }),
+        ].join('\n'))
       )
       .addSeparatorComponents(divider())
       .addTextDisplayComponents(
@@ -89,6 +84,13 @@ function createModerationWorkflow({
           '',
           `-# ${t('moderation.timeoutDmFooter')}`,
         ].join('\n'))
+      )
+      .addSeparatorComponents(divider())
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`### ${t('moderation.timeoutDmMistakePrompt')}`)
+      )
+      .addActionRowComponents(
+        new ActionRowBuilder().addComponents(appealButtonComponent(eventId, t))
       );
 
     return {

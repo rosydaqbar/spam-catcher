@@ -136,7 +136,9 @@ function geminiModelPath(model) {
 async function fetchAttachmentBase64(attachment) {
   const size = Number(attachment?.size || 0);
   if (size > MAX_IMAGE_BYTES) {
-    throw new Error(`Image is too large: ${size} bytes`);
+    const error = new Error(`Image is too large: ${size} bytes`);
+    error.unbilledAiVision = true;
+    throw error;
   }
 
   const controller = new AbortController();
@@ -153,6 +155,9 @@ async function fetchAttachmentBase64(attachment) {
       throw new Error(`Image is too large: ${buffer.byteLength} bytes`);
     }
     return buffer.toString('base64');
+  } catch (error) {
+    error.unbilledAiVision = true;
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -179,14 +184,25 @@ function visionPrompt({ retry = false, triggerWords = [] } = {}) {
   return lines.join('\n');
 }
 
-async function fetchJsonWithTimeout(url, options) {
+async function fetchJsonWithTimeout(url, options, provider = null) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(body?.error?.message || `AI request failed: HTTP ${response.status}`);
+      const error = new Error(body?.error?.message || `AI request failed: HTTP ${response.status}`);
+      error.httpStatus = response.status;
+      error.provider = provider;
+      error.providerError = body?.error || null;
+      if (provider === 'openrouter') {
+        const hasCost = Boolean(body?.usage && Object.prototype.hasOwnProperty.call(body.usage, 'cost'));
+        const cost = hasCost && typeof body.usage.cost === 'number' ? body.usage.cost : NaN;
+        error.openRouterCost = Number.isFinite(cost) ? cost : null;
+        error.unbilledAiVision = openRouterResponseIsUnbilled(body)
+          || openRouterRejectionIsUnbilled(body, response.status);
+      }
+      throw error;
     }
     return body;
   } finally {
@@ -251,7 +267,42 @@ function extractOpenRouterText(body) {
   });
   error.cleanedAiResponse = error.rawAiResponse;
   error.retryableAiVision = true;
+  const hasCost = Boolean(body?.usage && Object.prototype.hasOwnProperty.call(body.usage, 'cost'));
+  const cost = hasCost && typeof body.usage.cost === 'number' ? body.usage.cost : NaN;
+  error.openRouterCost = Number.isFinite(cost) ? cost : null;
+  error.unbilledAiVision = openRouterResponseIsUnbilled(body);
   throw error;
+}
+
+function openRouterResponseIsUnbilled(body) {
+  const choice = body?.choices?.[0];
+  const usage = body?.usage;
+  const hasCost = Boolean(usage && Object.prototype.hasOwnProperty.call(usage, 'cost'));
+  const hasCompletionTokens = Boolean(usage && Object.prototype.hasOwnProperty.call(usage, 'completion_tokens'));
+  const cost = hasCost && typeof usage.cost === 'number' ? usage.cost : NaN;
+  const completionTokens = hasCompletionTokens && typeof usage.completion_tokens === 'number'
+    ? usage.completion_tokens
+    : NaN;
+  const finishReason = choice?.finish_reason
+    ?? choice?.native_finish_reason
+    ?? (body?.error ? 'error' : null);
+  const normalizedFinishReason = finishReason === null ? null : String(finishReason).toLowerCase();
+  if (hasCost && Number.isFinite(cost)) return cost === 0;
+  return (
+    hasCompletionTokens
+    && Number.isFinite(completionTokens)
+    && completionTokens === 0
+    && (!normalizedFinishReason || normalizedFinishReason === 'error')
+  );
+}
+
+function openRouterRejectionIsUnbilled(body, httpStatus) {
+  const hasUsage = Boolean(body && Object.prototype.hasOwnProperty.call(body, 'usage'));
+  const hasGeneratedChoice = Array.isArray(body?.choices) && body.choices.length > 0;
+  return Number(httpStatus) >= 400
+    && Number(httpStatus) < 500
+    && !hasUsage
+    && !hasGeneratedChoice;
 }
 
 function shouldRetryAiVisionError(error) {
@@ -270,6 +321,7 @@ function combineAiVisionErrors(firstError, retryError) {
   error.cleanedAiResponse = retryError.cleanedAiResponse || firstError.cleanedAiResponse || null;
   error.firstRawAiResponse = firstError.rawAiResponse || null;
   error.firstCleanedAiResponse = firstError.cleanedAiResponse || null;
+  error.unbilledAiVision = Boolean(firstError.unbilledAiVision && retryError.unbilledAiVision);
   return error;
 }
 
@@ -299,8 +351,11 @@ async function callOpenRouter({ apiKey, model, imageUrl, base64Image, mimeType, 
       temperature: 0,
       stream: false,
     }),
-  });
-  return extractOpenRouterText(body);
+  }, 'openrouter');
+  return {
+    text: extractOpenRouterText(body),
+    unbilledAiVision: openRouterResponseIsUnbilled(body),
+  };
 }
 
 async function callGemini({ apiKey, model, base64Image, mimeType, prompt }) {
@@ -325,13 +380,13 @@ async function callGemini({ apiKey, model, base64Image, mimeType, prompt }) {
         temperature: 0,
       },
     }),
-  });
+  }, 'gemini');
   const text = body?.candidates?.[0]?.content?.parts
     ?.map((part) => part.text || '')
     .join('')
     .trim();
   if (!text) throw new Error('Gemini response did not include text.');
-  return text;
+  return { text, unbilledAiVision: false };
 }
 
 function createAiVisionChecker({
@@ -382,16 +437,21 @@ function createAiVisionChecker({
         error.firstRawAiResponse = urlError.rawAiResponse || null;
         error.firstCleanedAiResponse = urlError.cleanedAiResponse || null;
         error.retryableAiVision = Boolean(urlError.retryableAiVision);
+        error.unbilledAiVision = Boolean(urlError.unbilledAiVision && fetchError.unbilledAiVision);
         throw error;
       }
       try {
-        return await callOpenRouter({
+        const base64Result = await callOpenRouter({
           apiKey: openRouterApiKey,
           model,
           base64Image,
           mimeType,
           prompt,
         });
+        return {
+          ...base64Result,
+          unbilledAiVision: Boolean(urlError.unbilledAiVision && base64Result.unbilledAiVision),
+        };
       } catch (base64Error) {
         const error = new Error(`OpenRouter image URL failed (${urlError.message}); base64 fallback failed (${base64Error.message})`);
         error.rawAiResponse = base64Error.rawAiResponse || urlError.rawAiResponse || null;
@@ -399,6 +459,7 @@ function createAiVisionChecker({
         error.firstRawAiResponse = urlError.rawAiResponse || null;
         error.firstCleanedAiResponse = urlError.cleanedAiResponse || null;
         error.retryableAiVision = Boolean(urlError.retryableAiVision || base64Error.retryableAiVision);
+        error.unbilledAiVision = Boolean(urlError.unbilledAiVision && base64Error.unbilledAiVision);
         throw error;
       }
     }
@@ -420,18 +481,28 @@ function createAiVisionChecker({
 
   async function analyzeProviderJson(attachment, mimeType, triggerWords) {
     let firstError = null;
-    let text;
+    let response;
     try {
-      text = await callProvider(attachment, mimeType, { triggerWords });
-      return parseVisionJson(text);
+      response = await callProvider(attachment, mimeType, { triggerWords });
+      try {
+        return parseVisionJson(response.text);
+      } catch (error) {
+        error.unbilledAiVision = Boolean(response.unbilledAiVision);
+        throw error;
+      }
     } catch (error) {
       if (!shouldRetryAiVisionError(error)) throw error;
       firstError = error;
     }
 
     try {
-      text = await callProvider(attachment, mimeType, { retry: true, triggerWords });
-      return parseVisionJson(text);
+      response = await callProvider(attachment, mimeType, { retry: true, triggerWords });
+      try {
+        return parseVisionJson(response.text);
+      } catch (error) {
+        error.unbilledAiVision = Boolean(response.unbilledAiVision);
+        throw error;
+      }
     } catch (retryError) {
       if (!firstError) throw retryError;
       throw combineAiVisionErrors(firstError, retryError);

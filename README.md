@@ -418,6 +418,48 @@ Notice failures are logged with the `[spam-catcher-setup]` prefix. Logs include 
 
 ---
 
+## 🧭 Automatic Detection Flow
+
+Quick overview of the moderation flow.
+
+### 1. Triggered
+
+- First qualifying attachment message opens an Alert window.
+- No moderation action is applied yet.
+
+[Screenshot]
+
+### 2. Danger Detected
+
+- Second qualifying message confirms one Danger incident.
+- Later qualifying messages update the same review card.
+
+[Screenshot]
+
+### 3. Timed Out
+
+- The configured Automatic Detection timeout is applied immediately.
+- Administrators can remove it for a false positive.
+
+[Screenshot]
+
+### 4. Banned
+
+- Automatic Detection requires an Administrator to confirm **Ban User**.
+- Spam Catcher Auto Ban can run immediately, when the timeout ends, or after the delayed appeal window.
+
+[Screenshot]
+
+### 5. Delete Evidence
+
+- Available after AI Verdict finishes when enabled.
+- Removes stored Alert, trigger, and follow-up messages outside protected trap channels.
+- Completed or already-deleted evidence disables the button; failures remain retryable.
+
+[Screenshot]
+
+---
+
 ## 📚 Reference
 
 ### 🔐 Permissions And Intents

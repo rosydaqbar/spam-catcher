@@ -1,9 +1,11 @@
 const {
   ActionRowBuilder,
+  ApplicationIntegrationType,
   ButtonBuilder,
   ButtonStyle,
   ChannelSelectMenuBuilder,
   ChannelType,
+  InteractionContextType,
   MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
@@ -51,11 +53,19 @@ const APPEAL_WINDOW_OPTIONS = [
   { label: '24 Hours', value: '1440' },
 ];
 
-function createSetupCommandManager({ client, configStore }) {
+function createSetupCommandManager({
+  client,
+  configStore,
+  additionalCommands = [],
+  runGuildConfigOperation = async (_guildId, task) => task(),
+  invalidateGuildConfig = () => {},
+}) {
   function commandData() {
     return new SlashCommandBuilder()
       .setName(COMMAND_NAME)
       .setDescription('Manage Spam Catcher for this server')
+      .setContexts(InteractionContextType.Guild)
+      .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
       .addSubcommand((subcommand) => subcommand
         .setName('help')
         .setDescription('Show Spam Catcher commands and features'))
@@ -89,7 +99,7 @@ function createSetupCommandManager({ client, configStore }) {
       return;
     }
 
-    const commands = [commandData()];
+    const commands = [commandData(), ...additionalCommands.filter(Boolean)];
     const connectedGuildIds = [...client.guilds.cache.keys()].sort();
     const allowedGuildIds = [...parseAllowedGuildIds()].sort();
     const meta = {
@@ -242,6 +252,21 @@ function createSetupCommandManager({ client, configStore }) {
 
   function isAutomaticSpamDetectionReady(config) {
     return Boolean(config.logChannelId);
+  }
+
+  function hasAutomaticDetectionPermissions(guild, config) {
+    const botMember = guild.members.me;
+    if (!botMember?.permissions.has(PermissionFlagsBits.ModerateMembers)) return false;
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageMessages)) return false;
+    const logChannel = guild.channels.cache.get(config.logChannelId);
+    const logPermissions = logChannel?.permissionsFor?.(botMember);
+    if (!logPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) return false;
+    return [...guild.channels.cache.values()].every((channel) => {
+      if (!channel.isTextBased?.() || config.channelIds.includes(channel.id)) return true;
+      const permissions = channel.permissionsFor?.(botMember);
+      return !permissions?.has(PermissionFlagsBits.ViewChannel)
+        || permissions.has(PermissionFlagsBits.ManageMessages);
+    });
   }
 
   function buildComponentPayload(components, { ephemeral = false } = {}) {
@@ -989,11 +1014,11 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function handleLangCommand(interaction) {
     if (!await requireAdmin(interaction)) return true;
-    const config = await configStore.getSpamCatcherConfig(interaction.guildId);
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const language = normalizeLanguage(interaction.options.getString('language', true));
-    const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, { ...config, language });
+    const saved = await updateGuildConfig(interaction.guildId, (config) => ({ ...config, language }));
     const t = createTranslator(saved.language);
-    await interaction.reply(buildDashboardPayload(
+    await interaction.editReply(buildDashboardPayload(
       interaction.guildId,
       saved,
       t('setup.languageSaved', { language: languageName(saved.language) }),
@@ -1071,38 +1096,58 @@ function createSetupCommandManager({ client, configStore }) {
     return true;
   }
 
-  async function saveAndUpdate(interaction, nextConfig, statusMessage, buildPayload = buildDashboardPayload) {
-    const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, nextConfig);
-    const payload = await buildPayload(interaction.guildId, saved, statusMessage);
-    await interaction.update(payload).catch(async () => {
-      await interaction.editReply(await buildPayload(interaction.guildId, saved, statusMessage)).catch(() => null);
+  async function updateGuildConfig(guildId, updateConfig) {
+    return runGuildConfigOperation(guildId, async () => {
+      const config = await configStore.getSpamCatcherConfig(guildId);
+      const saved = await configStore.saveSpamCatcherConfig(guildId, updateConfig(config));
+      invalidateGuildConfig(guildId);
+      return saved;
     });
+  }
+
+  async function saveAndUpdate(
+    interaction,
+    updateConfig,
+    statusMessage,
+    buildPayload = buildDashboardPayload,
+    validateConfig = null
+  ) {
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+    const saved = await updateGuildConfig(interaction.guildId, (config) => {
+      if (validateConfig && !validateConfig(config)) {
+        throw new Error('Guild settings changed before this action could be saved. Refresh the setup panel and try again.');
+      }
+      return updateConfig(config);
+    });
+    const payload = await buildPayload(interaction.guildId, saved, statusMessage);
+    await interaction.editReply(payload);
   }
 
   async function handleSelect(interaction) {
     if (!await requireAdmin(interaction)) return true;
+    await interaction.deferUpdate();
     const config = await configStore.getSpamCatcherConfig(interaction.guildId);
     const t = createTranslator(config.language);
     const [, type] = interaction.customId.split(':');
 
     if (type === 'trap') {
-      await saveAndUpdate(interaction, { ...config, channelIds: interaction.values }, t('setup.trapSaved'), buildChannelsPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, channelIds: interaction.values }), t('setup.trapSaved'), buildChannelsPanelPayload);
       return true;
     }
     if (type === 'review') {
-      await saveAndUpdate(interaction, { ...config, reviewChannelId: interaction.values[0] }, t('setup.reviewSaved'), buildChannelsPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, reviewChannelId: interaction.values[0] }), t('setup.reviewSaved'), buildChannelsPanelPayload);
       return true;
     }
     if (type === 'log') {
-      await saveAndUpdate(interaction, { ...config, logChannelId: interaction.values[0] }, t('setup.logSaved'), buildChannelsPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, logChannelId: interaction.values[0] }), t('setup.logSaved'), buildChannelsPanelPayload);
       return true;
     }
     if (type === 'timeout') {
-      await saveAndUpdate(interaction, { ...config, timeoutMinutes: Number(interaction.values[0]) }, t('setup.timeoutSaved'), buildChannelsPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, timeoutMinutes: Number(interaction.values[0]) }), t('setup.timeoutSaved'), buildChannelsPanelPayload);
       return true;
     }
     if (type === 'delay') {
-      await saveAndUpdate(interaction, { ...config, banDelayMinutes: Number(interaction.values[0]) }, t('setup.delaySaved'), buildAutoBanPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, banDelayMinutes: Number(interaction.values[0]) }), t('setup.delaySaved'), buildAutoBanPanelPayload);
       return true;
     }
     return false;
@@ -1110,9 +1155,11 @@ function createSetupCommandManager({ client, configStore }) {
 
   async function handleButton(interaction) {
     if (!await requireAdmin(interaction)) return true;
+    const [, action, value] = interaction.customId.split(':');
+    const mutatingActions = new Set(['enable', 'disable', 'autoban', 'mode', 'timeout', 'delay', 'autodetect', 'aivision']);
+    if (mutatingActions.has(action) || action === 'post_notices') await interaction.deferUpdate();
     const config = await configStore.getSpamCatcherConfig(interaction.guildId);
     const t = createTranslator(config.language);
-    const [, action, value] = interaction.customId.split(':');
 
     if (action === 'panel') {
       await interaction.reply(await buildPanelPayload(value, interaction.guildId, config, null, { ephemeral: true }));
@@ -1126,29 +1173,32 @@ function createSetupCommandManager({ client, configStore }) {
 
     if (action === 'enable') {
       if (!isConfigReady(config)) {
-        await interaction.update(buildSpamCatcherPanelPayload(
+        await interaction.editReply(buildSpamCatcherPanelPayload(
           interaction.guildId,
           config,
           t('setup.cannotEnableSpam')
         ));
         return true;
       }
-      await saveAndUpdate(interaction, { ...config, enabled: true }, t('setup.spamEnabled'), buildSpamCatcherPanelPayload);
+      await saveAndUpdate(
+        interaction,
+        (current) => ({ ...current, enabled: true }),
+        t('setup.spamEnabled'),
+        buildSpamCatcherPanelPayload,
+        isConfigReady
+      );
       return true;
     }
 
     if (action === 'disable') {
-      await saveAndUpdate(interaction, { ...config, enabled: false }, t('setup.spamDisabled'), buildSpamCatcherPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, enabled: false }), t('setup.spamDisabled'), buildSpamCatcherPanelPayload);
       return true;
     }
 
     if (action === 'autoban') {
-      const nextConfig = value === 'on'
-        ? { ...config, autoBanEnabled: true }
-        : { ...config, autoBanEnabled: false };
       await saveAndUpdate(
         interaction,
-        nextConfig,
+        (current) => ({ ...current, autoBanEnabled: value === 'on' }),
         value === 'on' ? t('setup.autoBanEnabled') : t('setup.autoBanDisabled'),
         buildAutoBanPanelPayload
       );
@@ -1156,41 +1206,53 @@ function createSetupCommandManager({ client, configStore }) {
     }
 
     if (action === 'mode') {
-      await saveAndUpdate(interaction, { ...config, autoBanEnabled: true, banMode: value }, t('setup.banTimingSaved'), buildAutoBanPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, autoBanEnabled: true, banMode: value }), t('setup.banTimingSaved'), buildAutoBanPanelPayload);
       return true;
     }
 
     if (action === 'timeout') {
-      await saveAndUpdate(interaction, { ...config, timeoutMinutes: Number(value) }, t('setup.timeoutSaved'), buildChannelsPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, timeoutMinutes: Number(value) }), t('setup.timeoutSaved'), buildChannelsPanelPayload);
       return true;
     }
 
     if (action === 'delay') {
-      await saveAndUpdate(interaction, { ...config, banDelayMinutes: Number(value) }, t('setup.delaySaved'), buildAutoBanPanelPayload);
+      await saveAndUpdate(interaction, (current) => ({ ...current, banDelayMinutes: Number(value) }), t('setup.delaySaved'), buildAutoBanPanelPayload);
       return true;
     }
 
     if (action === 'autodetect') {
       if (value === 'on' && !isAutomaticSpamDetectionReady(config)) {
-        await interaction.update(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
+        await interaction.editReply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
           interaction.guildId,
           config,
           t('setup.cannotEnableDetection')
         ));
         return true;
       }
+      if (value === 'on' && !hasAutomaticDetectionPermissions(interaction.guild, config)) {
+        await interaction.editReply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
+          interaction.guildId,
+          config,
+          t('setup.cannotEnableDetectionPermissions')
+        ));
+        return true;
+      }
       await saveAndUpdate(
         interaction,
-        { ...config, automaticSpamDetectionEnabled: value === 'on' },
+        (current) => ({ ...current, automaticSpamDetectionEnabled: value === 'on' }),
         value === 'on' ? t('setup.detectionEnabled') : t('setup.detectionDisabled'),
-        buildAutomaticSpamDetectionPanelPayloadWithQuota
+        buildAutomaticSpamDetectionPanelPayloadWithQuota,
+        value === 'on'
+          ? (current) => isAutomaticSpamDetectionReady(current)
+            && hasAutomaticDetectionPermissions(interaction.guild, current)
+          : null
       );
       return true;
     }
 
     if (action === 'aivision') {
       if (value === 'on' && !hasAiVisionKey()) {
-        await interaction.update(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
+        await interaction.editReply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
           interaction.guildId,
           config,
           t('setup.cannotEnableAiVision')
@@ -1199,7 +1261,7 @@ function createSetupCommandManager({ client, configStore }) {
       }
       await saveAndUpdate(
         interaction,
-        { ...config, aiVisionSpamCheckEnabled: value === 'on' },
+        (current) => ({ ...current, aiVisionSpamCheckEnabled: value === 'on' }),
         value === 'on' ? t('setup.aiVisionEnabled') : t('setup.aiVisionDisabled'),
         buildAutomaticSpamDetectionPanelPayloadWithQuota
       );
@@ -1226,7 +1288,6 @@ function createSetupCommandManager({ client, configStore }) {
     }
 
     if (action === 'post_notices') {
-      await interaction.deferUpdate().catch(() => null);
       const saved = await configStore.getSpamCatcherConfig(interaction.guildId);
       let result;
       try {
@@ -1263,14 +1324,15 @@ function createSetupCommandManager({ client, configStore }) {
     if (interaction.customId !== AI_VISION_WORDS_MODAL) return false;
     if (!await requireAdmin(interaction)) return true;
 
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const config = await configStore.getSpamCatcherConfig(interaction.guildId);
     const t = createTranslator(config.language);
     const words = interaction.fields.getTextInputValue('words');
-    const saved = await configStore.saveSpamCatcherConfig(interaction.guildId, {
-      ...config,
+    const saved = await updateGuildConfig(interaction.guildId, (current) => ({
+      ...current,
       aiVisionTriggerWords: words,
-    });
-    await interaction.reply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
+    }));
+    await interaction.editReply(await buildAutomaticSpamDetectionPanelPayloadWithQuota(
       interaction.guildId,
       saved,
       t('setup.aiVisionTriggerWordsSaved'),
@@ -1314,6 +1376,7 @@ function createSetupCommandManager({ client, configStore }) {
   }
 
   return {
+    commandData,
     registerCommands,
     handleInteraction,
   };

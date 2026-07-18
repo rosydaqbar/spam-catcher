@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_users (
   spammer_count INTEGER NOT NULL DEFAULT 0,
   last_alert_at TIMESTAMPTZ,
   last_alert_window_expires_at TIMESTAMPTZ,
+  last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE,
   last_danger_at TIMESTAMPTZ,
   last_channel_id TEXT,
   last_message_id TEXT,
@@ -103,9 +104,27 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage_reservations (
   allowed BOOLEAN NOT NULL DEFAULT FALSE,
   used_count_after INTEGER NOT NULL DEFAULT 0,
   refunded BOOLEAN NOT NULL DEFAULT FALSE,
+  closed_by_reset BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE automatic_spam_detection_ai_usage_reservations
+  ADD COLUMN IF NOT EXISTS closed_by_reset BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS ai_vision_daily_limit_bypass_guilds (
+  guild_id TEXT PRIMARY KEY,
+  bypassed BOOLEAN NOT NULL DEFAULT TRUE,
+  added_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE ai_vision_daily_limit_bypass_guilds
+  ADD COLUMN IF NOT EXISTS bypassed BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS automatic_spam_detection_event_messages (
   event_id BIGINT NOT NULL REFERENCES automatic_spam_detection_events(id) ON DELETE CASCADE,
@@ -116,6 +135,24 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_event_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (event_id, message_id)
 );
+
+CREATE TABLE IF NOT EXISTS automatic_spam_detection_evidence_messages (
+  event_id BIGINT NOT NULL,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  protected BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (event_id, message_id)
+);
+
+ALTER TABLE automatic_spam_detection_evidence_messages
+  ADD COLUMN IF NOT EXISTS protected BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE automatic_spam_detection_evidence_messages
+  DROP CONSTRAINT IF EXISTS automatic_spam_detection_evidence_messages_event_id_fkey;
 
 CREATE INDEX IF NOT EXISTS idx_spam_catcher_events_guild_created
   ON spam_catcher_events(guild_id, created_at DESC);
@@ -134,6 +171,9 @@ CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created
 
 CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message
   ON automatic_spam_detection_events(review_channel_id, review_message_id);
+
+CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_evidence_messages_event
+  ON automatic_spam_detection_evidence_messages(event_id, created_at ASC);
 
 CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_window
   ON automatic_spam_detection_events(guild_id, user_id, window_expires_at DESC);

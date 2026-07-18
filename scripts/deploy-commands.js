@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const { DISCORD_TOKEN, requireRuntimeEnv } = require('../src/bot/env');
+const { createSetupCommandManager } = require('../src/bot/setup-command');
+const { createSuperAdminCommandManager } = require('../src/bot/super-admin-command');
 
 const USAGE = `Usage:
   node scripts/deploy-commands.js
@@ -42,51 +44,15 @@ async function getBotApplicationId() {
   return data.id;
 }
 
-function buildCommandJson() {
-  return {
-    name: 'spam-catcher',
-    description: 'Manage Spam Catcher for this server',
-    default_member_permissions: '8',
-    type: 1,
-    options: [
-      {
-        type: 1,
-        name: 'setup',
-        description: 'Open the Spam Catcher setup panel',
-        options: [],
-      },
-      {
-        type: 1,
-        name: 'lang',
-        description: 'Set the Spam Catcher interface language',
-        options: [
-          {
-            type: 3,
-            name: 'language',
-            description: 'Language to use for Spam Catcher UI in this server',
-            required: true,
-            choices: [
-              { name: 'English', value: 'en' },
-              { name: 'Indonesia', value: 'id' },
-            ],
-          },
-        ],
-      },
-      {
-        type: 1,
-        name: 'check',
-        description: 'Check spam status for a user',
-        options: [
-          {
-            type: 6,
-            name: 'user',
-            description: 'User to check',
-            required: true,
-          },
-        ],
-      },
-    ],
-  };
+function buildCommandJson({ includeSuperAdmin }) {
+  const client = { guilds: { cache: new Map() } };
+  const configStore = {};
+  const superAdminManager = createSuperAdminCommandManager({ client, configStore });
+  const setupManager = createSetupCommandManager({ client, configStore });
+  return [
+    setupManager.commandData(),
+    includeSuperAdmin ? superAdminManager.commandData() : null,
+  ].filter(Boolean);
 }
 
 async function main() {
@@ -97,7 +63,13 @@ async function main() {
   }
   requireRuntimeEnv();
 
-  const commandJson = buildCommandJson();
+  const commandJson = buildCommandJson({ includeSuperAdmin: !args.guildId });
+  if (args.guildId) {
+    for (const command of commandJson) {
+      delete command.contexts;
+      delete command.integration_types;
+    }
+  }
   const appId = await getBotApplicationId();
 
   let url = `${API_BASE}/applications/${appId}/commands`;
@@ -114,7 +86,7 @@ async function main() {
       Authorization: `Bot ${DISCORD_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify([commandJson]),
+    body: JSON.stringify(commandJson),
   });
 
   if (!res.ok) {

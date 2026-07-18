@@ -225,8 +225,10 @@ You should see these tables:
 - `automatic_spam_detection_users`
 - `automatic_spam_detection_events`
 - `automatic_spam_detection_event_messages`
+- `automatic_spam_detection_evidence_messages`
 - `automatic_spam_detection_ai_usage`
 - `automatic_spam_detection_ai_usage_reservations`
+- `ai_vision_daily_limit_bypass_guilds`
 
 ### 7. Add PostgreSQL To `.env`
 

@@ -25,12 +25,25 @@ const DISCORD_TIMEOUT_MAX_MS = (28 * 24 * 60 * 60 * 1000) - 60_000;
 function createSpamCatcherManager({ client, configStore }) {
   const allowedGuildIds = parseAllowedGuildIds();
   const configCache = new Map();
+  const userOperationByKey = new Map();
   let banInterval = null;
   let delayedBanRunning = false;
 
   function isGuildAllowed(guildId) {
     if (!guildId) return false;
     return allowedGuildIds.size === 0 || allowedGuildIds.has(guildId);
+  }
+
+  async function runUserStateReset(guildId, userId, resetTask) {
+    const key = `${guildId}:${userId}`;
+    const previous = userOperationByKey.get(key) || Promise.resolve();
+    const current = previous.catch(() => null).then(resetTask);
+    userOperationByKey.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (userOperationByKey.get(key) === current) userOperationByKey.delete(key);
+    }
   }
 
   async function getConfig(guildId) {
@@ -152,6 +165,7 @@ function createSpamCatcherManager({ client, configStore }) {
       ban_failed: '🚨 Ban failed',
       timeout_failed: '🚨 Timeout failed',
       timeout_removed: '✅ Timeout removed',
+      admin_reset: '♻️ State reset by Super Admin',
     };
     return labels[event.status] || event.status || 'Unknown';
   }
@@ -161,17 +175,18 @@ function createSpamCatcherManager({ client, configStore }) {
     if (event.status === 'ban_failed') return '🚨 Spam Catcher Ban Failed';
     if (event.status === 'timeout_failed') return '🚨 Spam Catcher Timeout Failed';
     if (event.status === 'timeout_removed') return '✅ Spam Catcher Timeout Removed';
+    if (event.status === 'admin_reset') return '♻️ Spam Catcher State Reset';
     return '🧲 Spam Catcher Review';
   }
 
   function reviewAccentColor(event) {
     if (event.status === 'banned' || event.status === 'ban_failed' || event.status === 'timeout_failed') return 0xef4444;
-    if (event.status === 'timeout_removed') return 0x22c55e;
+    if (event.status === 'timeout_removed' || event.status === 'admin_reset') return 0x22c55e;
     return 0xf59e0b;
   }
 
   function scheduledBanLine(event) {
-    if (event.status === 'banned' || event.status === 'timeout_removed') return null;
+    if (event.status === 'banned' || event.status === 'timeout_removed' || event.status === 'admin_reset') return null;
     if (!event.banAfter) return null;
     const scheduledAt = timestamp(event.banAfter);
     if (event.action === 'ban_after_timeout') return `**Ban after timeout ends:** ${scheduledAt}`;
@@ -201,7 +216,7 @@ function createSpamCatcherManager({ client, configStore }) {
             catcherMessageLine(event),
             `**Action:** \`${reviewActionLabel(event)}\``,
             `**Status:** \`${reviewStatusLabel(event)}\``,
-            event.timeoutUntil && event.status !== 'banned' && event.status !== 'timeout_removed'
+            event.timeoutUntil && !['banned', 'timeout_removed', 'admin_reset'].includes(event.status)
               ? `**Timeout until:** ${timestamp(event.timeoutUntil)}`
               : null,
             scheduledBanLine(event),
@@ -421,7 +436,7 @@ function createSpamCatcherManager({ client, configStore }) {
     return moderationWorkflow.sendTimeoutRemovedDm({ userId: event.userId, guildName: guild.name, config });
   }
 
-  async function handleMessage(message) {
+  async function handleQueuedMessage(message) {
     if (!message.guild || !message.member || message.author?.bot || message.webhookId) return;
     if (!isGuildAllowed(message.guild.id)) return;
     const config = await getConfig(message.guild.id).catch((error) => {
@@ -467,6 +482,15 @@ function createSpamCatcherManager({ client, configStore }) {
     }
 
     await handleTimeout(message.guild, message.member, config, event);
+  }
+
+  async function handleMessage(message) {
+    if (!message.guild || !message.author) return;
+    return runUserStateReset(
+      message.guild.id,
+      message.author.id,
+      () => handleQueuedMessage(message)
+    );
   }
 
   async function requireAdmin(interaction, action) {
@@ -646,11 +670,13 @@ function createSpamCatcherManager({ client, configStore }) {
       const events = await configStore.getDueSpamCatcherBanEvents(25).catch(() => []);
       for (const event of events) {
         if (!isGuildAllowed(event.guildId)) continue;
-        const config = await getConfig(event.guildId).catch(() => null);
-        if (!config?.enabled) continue;
-        const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
-        if (!guild) continue;
-        await handleImmediateBan(guild, event);
+        await runUserStateReset(event.guildId, event.userId, async () => {
+          const currentEvent = await configStore.getSpamCatcherEventById(event.id).catch(() => null);
+          if (!currentEvent || currentEvent.status !== 'ban_pending') return;
+          const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
+          if (!guild) return;
+          await handleImmediateBan(guild, currentEvent);
+        });
       }
     } finally {
       delayedBanRunning = false;
@@ -671,11 +697,17 @@ function createSpamCatcherManager({ client, configStore }) {
     banInterval = null;
   }
 
+  function invalidateGuildConfig(guildId) {
+    configCache.delete(guildId);
+  }
+
   return {
     handleMessage,
     handleInteraction,
     startLoop,
     stopLoop,
+    invalidateGuildConfig,
+    runUserStateReset,
   };
 }
 

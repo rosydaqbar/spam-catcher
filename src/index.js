@@ -5,10 +5,26 @@ const configStore = require('./config-store');
 const { createAutomaticSpamDetectionManager } = require('./bot/automatic-spam-detection');
 const { createSpamCatcherManager } = require('./bot/spam-catcher');
 const { createSetupCommandManager } = require('./bot/setup-command');
+const { createSuperAdminCommandManager } = require('./bot/super-admin-command');
 const { DISCORD_TOKEN, requireRuntimeEnv } = require('./bot/env');
 const { createLogger } = require('./lib/logger');
 
 const logger = createLogger('spam-catcher');
+const guildConfigOperationById = new Map();
+
+async function runGuildConfigOperation(guildId, task) {
+  if (!guildId) return task();
+  const previous = guildConfigOperationById.get(guildId) || Promise.resolve();
+  const current = previous.catch(() => null).then(task);
+  guildConfigOperationById.set(guildId, current);
+  try {
+    return await current;
+  } finally {
+    if (guildConfigOperationById.get(guildId) === current) {
+      guildConfigOperationById.delete(guildId);
+    }
+  }
+}
 
 requireRuntimeEnv();
 
@@ -24,13 +40,31 @@ const spamCatcherManager = createSpamCatcherManager({
   client,
   configStore,
 });
-const setupCommandManager = createSetupCommandManager({
-  client,
-  configStore,
-});
 const automaticSpamDetectionManager = createAutomaticSpamDetectionManager({
   client,
   configStore,
+  runGuildConfigOperation,
+});
+const superAdminCommandManager = createSuperAdminCommandManager({
+  client,
+  configStore,
+  runAutomaticUserReset: automaticSpamDetectionManager.runUserStateReset,
+  runSpamCatcherUserReset: spamCatcherManager.runUserStateReset,
+  runGuildConfigOperation,
+  invalidateGuildConfig: (guildId) => {
+    spamCatcherManager.invalidateGuildConfig(guildId);
+    automaticSpamDetectionManager.invalidateGuildConfig(guildId);
+  },
+});
+const setupCommandManager = createSetupCommandManager({
+  client,
+  configStore,
+  additionalCommands: [superAdminCommandManager.commandData()].filter(Boolean),
+  runGuildConfigOperation,
+  invalidateGuildConfig: (guildId) => {
+    spamCatcherManager.invalidateGuildConfig(guildId);
+    automaticSpamDetectionManager.invalidateGuildConfig(guildId);
+  },
 });
 
 let shuttingDown = false;
@@ -86,7 +120,11 @@ client.once(Events.ClientReady, () => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (shuttingDown) return;
   try {
+    if (await superAdminCommandManager.handleInteraction(interaction)) {
+      return;
+    }
     if (await setupCommandManager.handleInteraction(interaction)) {
       return;
     }
@@ -113,6 +151,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
+  if (shuttingDown) return;
   try {
     await automaticSpamDetectionManager.handleMessage(message);
   } catch (error) {

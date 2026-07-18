@@ -24,12 +24,12 @@ Included features:
 
 - Trap Channels
 - Automatic Attachment Detection
-- AI Verdict image analysis (`3` checks per server each day)
+- AI Verdict image analysis (default: `3` checks per server each day)
 - Timeout, ban, and appeal workflows
 - Trap Channel Notices
 - English and Indonesian localization
 
-[![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511696518&integration_type=0&scope=bot)
+[![Invite to Server](https://img.shields.io/badge/Invite%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1519685310068424856&permissions=1099511704710&integration_type=0&scope=bot)
 
 ---
 
@@ -52,7 +52,7 @@ Included features:
 | Feature | Description |
 | --- | --- |
 | 🚧 **Trap Channels** | Apply a timeout or ban when a user posts in a designated channel. |
-| 📎 **Automatic Attachment Detection** | Detect repeated attachment bursts and create one tracked Danger incident. |
+| 📎 **Automatic Attachment Detection** | Detect repeated attachment bursts, create one tracked Danger incident, and let Administrators delete its source messages from the review card. |
 | 🧠 **AI Verdict** | Analyze the trigger image once and add OCR-based evidence to the existing incident. |
 | ⚖️ **Moderation And Appeals** | Share timeout, ban, DM, appeal, and administrator review workflows. |
 | 📣 **Trap Channel Notices** | Post and maintain warning messages in configured trap channels. |
@@ -84,8 +84,9 @@ Detection follows one fixed window:
 1. A message with `2+` attachments starts a `10 minute` Alert window.
 2. The next message from the same user with `2+` attachments inside that window creates one Danger incident.
 3. The bot immediately marks the user as a spammer, increments their incident count once, applies the timeout, sends the timeout DM, and posts a Danger card.
-4. Later qualifying messages inside the same window update the original incident with affected channels, message and attachment totals, and latest activity. They do not repeat moderation or AI analysis.
-5. After the window expires, the next qualifying message starts a new Alert window.
+4. The Danger card provides a **Delete Evidence** button for Administrators. Nothing is deleted automatically, and configured trap-channel messages are always preserved.
+5. Later qualifying messages inside the same window update the original incident with affected channels, message and attachment totals, and latest activity. They do not repeat moderation or AI analysis.
+6. After the window expires, the next qualifying message starts a new Alert window.
 
 Same-channel and cross-channel repeats both create Danger incidents. Removing the timeout, successfully banning the user, or finding that the member is no longer in the guild closes the active window. If the user can send messages in the guild again, their next qualifying message starts a new Alert window.
 
@@ -240,6 +241,7 @@ OPENROUTER_MODEL=xiaomi/mimo-v2.5
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS=
+SUPER_ADMIN_USER_IDS=
 ```
 
 The model values above are low-cost defaults. Self-hosters can replace them with any compatible image-capable OpenRouter or Gemini model.
@@ -252,6 +254,7 @@ The model values above are low-cost defaults. Self-hosters can replace them with
 - `GEMINI_API_KEY`: enables Gemini when OpenRouter is not configured.
 - `GEMINI_MODEL`: defaults to the low-cost `gemini-2.5-flash`; set it to any compatible Gemini model that accepts image input.
 - `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS`: comma-separated guild IDs that bypass only the AI Verdict daily quota.
+- `SUPER_ADMIN_USER_IDS`: comma-separated Discord user IDs allowed to use the owner-only `/spam-admin` command in bot DMs. The command is not registered when this value is empty.
 
 Guild IDs, channel IDs, timeout settings, ban settings, language, timezone, trigger words, and daily limits belong in PostgreSQL guild config, not `.env`.
 
@@ -271,8 +274,10 @@ Required tables:
 - `automatic_spam_detection_users`
 - `automatic_spam_detection_events`
 - `automatic_spam_detection_event_messages`
+- `automatic_spam_detection_evidence_messages`
 - `automatic_spam_detection_ai_usage`
 - `automatic_spam_detection_ai_usage_reservations`
+- `ai_vision_daily_limit_bypass_guilds`
 
 Recommended local/VPS connection:
 
@@ -353,6 +358,21 @@ Shows a user's Automatic Attachment Detection status and Trap Channel event hist
 /spam-catcher check user:@User
 ```
 
+### 🔐 `/spam-admin` (DM only)
+
+Owner-only controls for the hosted bot. The command uses Discord's user-install context, so it is hidden from users who only share a server with the bot. Enable **User Install** with the `applications.commands` scope in the Discord Developer Portal, install the app to each Super Admin's account, set `SUPER_ADMIN_USER_IDS` in `.env`, and restart the bot. Then use these commands in a DM with the bot:
+
+- `/spam-admin guilds`: list every guild currently connected to the bot
+- `/spam-admin bypass-add guild_id:<id>`: bypass the AI Verdict daily quota for a guild
+- `/spam-admin bypass-remove guild_id:<id>`: disable the bypass, including an ENV default
+- `/spam-admin bypass-list`: list all effective ENV and DM-configured bypasses
+- `/spam-admin quota-reset guild_id:<id>`: reset the current guild-local day's AI usage to zero
+- `/spam-admin quota-set guild_id:<id> limit:<number>`: set the guild's daily AI limit from `0` to `10,000`
+- `/spam-admin user-reset guild_id:<id> user_id:<id> scope:<active|full>`: clear active state or permanently delete that user's stored history in the guild
+- `/spam-admin guild-reset guild_id:<id>`: restore guild settings to disabled defaults while preserving incidents, already scheduled incident actions, notices, usage, and bypasses
+
+User and guild resets require button confirmation. Database resets do not remove an existing Discord timeout or ban. A full user reset retains only the minimal message references needed for **Delete Evidence** on an existing Discord card. Every interaction checks the Discord user ID against `SUPER_ADMIN_USER_IDS`, even when the account has installed the app.
+
 ### 💻 CLI Commands
 
 The Discord setup dashboard is preferred. CLI commands require the runtime environment variables because they connect to PostgreSQL and, where applicable, Discord.
@@ -407,6 +427,7 @@ Required Discord permissions:
 - `View Channels`
 - `Send Messages`
 - `Read Message History`
+- `Manage Messages`
 - `Moderate Members`
 
 Optional permission:
@@ -419,18 +440,19 @@ Required gateway intents:
 - `GuildMessages`
 - privileged `MessageContent`
 
-`Moderate Members` is required for timeout and timeout removal. `MessageContent` is required for Discord to include attachment metadata; the bot does not inspect message text.
+`Manage Messages` is required to delete Automatic Attachment Detection evidence outside trap channels. `Moderate Members` is required for timeout and timeout removal. `MessageContent` is required for Discord to include attachment metadata; the bot does not inspect message text.
 
 ### 🚀 Production Deployment
 
 Run the bot under a process manager such as `systemd`, `pm2`, or Docker. Keep PostgreSQL on `127.0.0.1` or a private network and use `PG_SSL_MODE=disable` only for a trusted local/VPS connection.
 
-The delayed-ban loop checks due events every `30 seconds`. Restarting the process does not remove stored guild config, incidents, scheduled ban state, notice message IDs, or AI quota usage because they are persisted in PostgreSQL.
+The delayed-ban loop checks due work every `30 seconds`. Restarting the process does not remove stored guild config, incidents, scheduled ban state, evidence references, notice message IDs, or AI quota usage because they are persisted in PostgreSQL.
 
 ### 📌 Behavior Notes
 
 - Discord Administrators are ignored by both moderation features.
 - Caught Trap Channel messages are not deleted.
+- Automatic Attachment Detection never deletes evidence automatically. Administrators can use **Delete Evidence** on the incident card after AI Verdict finishes; configured trap-channel messages are always preserved.
 - Caught totals are incident counts, not distinct-user counts.
 - Review cards allow Administrators to remove a timeout or ban the user.
 - Removing a timeout cancels the scheduled Spam Catcher ban for that incident.
@@ -441,6 +463,12 @@ The delayed-ban loop checks due events every `30 seconds`. Restarting the proces
 ---
 
 ## 📝 Changelog
+
+### 2026-07-18
+
+- Added an Administrator-only **Delete Evidence** incident-card button that preserves configured trap-channel messages.
+
+- Added owner-only `/spam-admin` controls through bot DMs for connected-guild listing, persistent quota bypasses, quota resets and limits, user database resets, and guild settings resets.
 
 ### 2026-07-17
 

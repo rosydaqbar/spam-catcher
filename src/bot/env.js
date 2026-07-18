@@ -8,6 +8,7 @@ const {
   GEMINI_API_KEY,
   GEMINI_MODEL,
   AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS,
+  SUPER_ADMIN_USER_IDS,
 } = process.env;
 
 function parseAllowedGuildIds(value = ALLOWED_GUILD_IDS) {
@@ -25,6 +26,15 @@ function parseAiVisionDailyLimitBypassGuildIds(value = AI_VISION_DAILY_LIMIT_BYP
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean)
+  );
+}
+
+function parseSuperAdminUserIds(value = SUPER_ADMIN_USER_IDS) {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => /^\d{17,20}$/.test(item))
   );
 }
 
@@ -49,7 +59,9 @@ module.exports = {
   GEMINI_API_KEY,
   GEMINI_MODEL,
   AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS,
+  SUPER_ADMIN_USER_IDS,
   parseAllowedGuildIds,
   parseAiVisionDailyLimitBypassGuildIds,
+  parseSuperAdminUserIds,
   requireRuntimeEnv,
 };

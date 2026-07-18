@@ -330,69 +330,75 @@ Saved channels are preselected when the setup panel is reopened, and changes are
 
 ### 🛠️ `/spam-catcher setup`
 
-Opens the Discord Components V2 setup dashboard for Administrators. Each summary displays saved settings and opens an ephemeral editing panel.
+Opens the Discord Components V2 setup dashboard for Administrators. The dashboard has five panels; AI Verdict is a separate function inside the Automatic Detection panel.
 
-#### Spam Catcher Summary
+#### 1. Spam Catcher
 
-- Trap Channel enable state.
-- Current timeout or ban outcome.
-
-[Screenshot]
-
-#### Channels / Timeout Summary
-
-- Trap, review, and log channels.
-- Timeout duration applied to Trap Channel incidents.
+- **Purpose:** turn Trap Channel moderation on or off.
+- **Controls:** enable or disable Spam Catcher and review its readiness and current moderation outcome.
+- **Different from:** this is the master Trap Channel switch; channels and ban timing are configured below.
 
 [Screenshot]
 
-#### Auto Ban Summary
+#### 2. Channels & Timeout
 
-- Auto Ban enable state and selected mode.
-- Appeal-window timing when delayed banning is selected.
-- **Auto Ban Off** keeps timeout-only moderation.
+- **Purpose:** choose where Trap Channel incidents happen and where staff review them.
+- **Controls:** select trap, review, and log channels, then choose the Trap Channel timeout duration.
+- **Different from:** controls channel routing and timeout length, not Auto Ban or Automatic Detection.
 
 [Screenshot]
 
-##### Ban After Appeal Window
+#### 3. Auto Ban
+
+- **Purpose:** decide whether and when Trap Channel incidents become bans.
+- **Controls:** enable or disable Auto Ban, choose one of three ban modes, and set the appeal window when required.
+- **Different from:** applies only to Trap Channel incidents; Automatic Detection bans still require Administrator confirmation.
+- **Off state:** **Auto Ban Off** keeps timeout-only moderation.
+
+[Screenshot]
+
+##### 3.1 Ban After Appeal Window
 
 - Applies the configured timeout first.
 - Bans after the selected appeal window unless an Administrator resolves the incident.
 
 [Screenshot]
 
-##### Ban Immediately
+##### 3.2 Ban Immediately
 
 - Bans as soon as the Trap Channel incident is created.
-- Does not apply a timeout or wait for an appeal window.
+- Skips the timeout and appeal window.
 
 [Screenshot]
 
-##### Ban After Timeout Ends
+##### 3.3 Ban After Timeout Ends
 
 - Applies the configured timeout first.
 - Bans when that timeout expires.
 
 [Screenshot]
 
-#### Automatic Spam Detection Summary
+#### 4. Automatic Detection
 
-- Enable state, attachment threshold, detection window, and timeout duration.
-- AI state, daily quota, timezone, and log channel.
-
-[Screenshot]
-
-#### AI Verdict Checker
-
-- Trigger words and confidence threshold.
-- Daily quota and provider readiness.
+- **Purpose:** detect repeated attachment bursts outside active Trap Channels.
+- **Controls:** enable or disable detection and review its attachment threshold, fixed window, timeout, and log channel.
+- **Different from:** works independently from Trap Channels and never processes messages inside an active trap.
 
 [Screenshot]
 
-#### Trap Notices Summary
+#### 5. AI Verdict (Inside Automatic Detection)
 
-- Configured Trap Channel count.
-- Notice readiness and posting controls.
+- **Purpose:** add image-analysis evidence to an Automatic Detection incident.
+- **Controls:** enable or disable AI Verdict, edit trigger words, and review confidence, quota, timezone, and provider readiness.
+- **Different from:** evidence only; it never delays, repeats, reverses, or independently applies moderation.
+
+[Screenshot]
+
+#### 6. Trap Notices
+
+- **Purpose:** warn users before they post in configured Trap Channels.
+- **Controls:** post or refresh the localized warning message in every configured trap.
+- **Different from:** manages informational channel messages, not moderation behavior.
 
 [Screenshot]
 

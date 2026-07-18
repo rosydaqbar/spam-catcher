@@ -346,7 +346,8 @@ Opens the Discord Components V2 setup dashboard for Administrators. The dashboar
 - **Controls:** select trap, review, and log channels, then choose the Trap Channel timeout duration.
 - **Different from:** controls channel routing and timeout length, not Auto Ban or Automatic Detection.
 
-[Screenshot]
+<img width="665" height="532" alt="image" src="https://github.com/user-attachments/assets/e2febad4-b8b8-4b6f-92aa-5853556688f3" />
+
 
 #### 3. Auto Ban
 
@@ -355,28 +356,26 @@ Opens the Discord Components V2 setup dashboard for Administrators. The dashboar
 - **Different from:** applies only to Trap Channel incidents; Automatic Detection bans still require Administrator confirmation.
 - **Off state:** **Auto Ban Off** keeps timeout-only moderation.
 
-[Screenshot]
-
 ##### 3.1 Ban After Appeal Window
 
 - Applies the configured timeout first.
 - Bans after the selected appeal window unless an Administrator resolves the incident.
+<img width="670" height="418" alt="image" src="https://github.com/user-attachments/assets/b3f73e92-84e0-41e8-95dd-92e6e3cc2a1b" />
 
-[Screenshot]
 
 ##### 3.2 Ban Immediately
 
 - Bans as soon as the Trap Channel incident is created.
 - Skips the timeout and appeal window.
+<img width="658" height="268" alt="image" src="https://github.com/user-attachments/assets/4cd7b123-ce63-4786-a053-98767e1f7d1a" />
 
-[Screenshot]
 
 ##### 3.3 Ban After Timeout Ends
 
 - Applies the configured timeout first.
 - Bans when that timeout expires.
+<img width="657" height="266" alt="image" src="https://github.com/user-attachments/assets/8d52aa08-04bd-4ae3-ae29-c400921b93cf" />
 
-[Screenshot]
 
 #### 4. Automatic Detection
 
@@ -384,23 +383,25 @@ Opens the Discord Components V2 setup dashboard for Administrators. The dashboar
 - **Controls:** enable or disable detection and review its attachment threshold, fixed window, timeout, and log channel.
 - **Different from:** works independently from Trap Channels and never processes messages inside an active trap.
 
-[Screenshot]
+<img width="673" height="584" alt="image" src="https://github.com/user-attachments/assets/e1d17767-4fab-4635-b21f-f1a653e0b016" />
+
 
 #### 5. AI Verdict (Inside Automatic Detection)
 
 - **Purpose:** add image-analysis evidence to an Automatic Detection incident.
 - **Controls:** enable or disable AI Verdict, edit trigger words, and review confidence, quota, timezone, and provider readiness.
 - **Different from:** evidence only; it never delays, repeats, reverses, or independently applies moderation.
+<img width="629" height="257" alt="image" src="https://github.com/user-attachments/assets/6e95e98c-fd9e-4f52-a09a-e4d09a471312" />
 
-[Screenshot]
 
 #### 6. Trap Notices
 
 - **Purpose:** warn users before they post in configured Trap Channels.
 - **Controls:** post or refresh the localized warning message in every configured trap.
 - **Different from:** manages informational channel messages, not moderation behavior.
+- Unfortunately, the trap notice message cannot currently be edited. I’m still working on its Markdown editor.
+<img width="668" height="176" alt="image" src="https://github.com/user-attachments/assets/cab06e7e-1125-41e3-8296-854de68e1df5" />
 
-[Screenshot]
 
 ### 🌐 `/spam-catcher lang`
 

@@ -592,6 +592,8 @@ async function ensureAutomaticSpamDetectionTables() {
         review_message_id TEXT,
         decided_by TEXT,
         decision_error TEXT,
+        evidence_deleted_by TEXT,
+        evidence_deleted_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
@@ -656,6 +658,12 @@ async function ensureAutomaticSpamDetectionTables() {
   );
   await query(
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ai_vision_checked_at TIMESTAMPTZ'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS evidence_deleted_by TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS evidence_deleted_at TIMESTAMPTZ'
   );
   await query(
     `
@@ -893,6 +901,8 @@ function mapAutomaticSpamDetectionEvent(row) {
     reviewMessageId: row.review_message_id || null,
     decidedBy: row.decided_by || null,
     decisionError: row.decision_error || null,
+    evidenceDeletedBy: row.evidence_deleted_by || null,
+    evidenceDeletedAt: row.evidence_deleted_at ? new Date(row.evidence_deleted_at) : null,
     createdAt: row.created_at ? new Date(row.created_at) : null,
     updatedAt: row.updated_at ? new Date(row.updated_at) : null,
   };
@@ -961,6 +971,29 @@ async function withGuildConfigLock(guildId, work) {
       await client.query(
         'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
         [`guild-config:${guildId}`]
+      ).catch(() => null);
+    }
+    client.release();
+  }
+}
+
+async function withAutomaticSpamDetectionEventLock(eventId, work) {
+  await ensureAutomaticSpamDetectionTables();
+  const db = await getPool();
+  const client = await db.connect();
+  let locked = false;
+  try {
+    await client.query(
+      'SELECT pg_advisory_lock(hashtextextended($1, 0))',
+      [`automatic-spam-event:${eventId}`]
+    );
+    locked = true;
+    return await work(client);
+  } finally {
+    if (locked) {
+      await client.query(
+        'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+        [`automatic-spam-event:${eventId}`]
       ).catch(() => null);
     }
     client.release();
@@ -1552,9 +1585,10 @@ async function updateAutomaticSpamDetectionAiVisionResult(id, {
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
-async function getAutomaticSpamDetectionEventById(id) {
+async function getAutomaticSpamDetectionEventById(id, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query('SELECT * FROM automatic_spam_detection_events WHERE id = $1', [id]);
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute('SELECT * FROM automatic_spam_detection_events WHERE id = $1', [id]);
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
@@ -1591,9 +1625,17 @@ async function updateAutomaticSpamDetectionReviewMessage(id, reviewChannelId, re
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
-async function updateAutomaticSpamDetectionDecision(id, status, decidedBy, decisionError = null) {
+async function updateAutomaticSpamDetectionDecision(
+  id,
+  status,
+  decidedBy,
+  decisionError = null,
+  dbClient = null,
+  expectedStatus = null
+) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       UPDATE automatic_spam_detection_events
       SET status = $2,
@@ -1601,9 +1643,10 @@ async function updateAutomaticSpamDetectionDecision(id, status, decidedBy, decis
           decision_error = $4,
           updated_at = NOW()
       WHERE id = $1
+        AND ($5::text IS NULL OR status = $5)
       RETURNING *
     `,
-    [id, status, decidedBy || null, decisionError || null]
+    [id, status, decidedBy || null, decisionError || null, expectedStatus]
   );
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
@@ -1623,9 +1666,10 @@ async function markAutomaticSpamDetectionAppealed(id, appealMessage) {
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
-async function getLatestOpenAutomaticSpamDetectionDangerEvent(guildId, userId) {
+async function getLatestOpenAutomaticSpamDetectionDangerEvent(guildId, userId, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       SELECT *
       FROM automatic_spam_detection_events
@@ -1648,10 +1692,11 @@ async function resolveAutomaticSpamDetectionEventAndCloseWindow(id, {
   decidedBy,
   decisionError = null,
   closedAt = new Date(),
-}) {
+}, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
   const closedBefore = new Date(new Date(closedAt).getTime() - 1);
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       WITH target_window AS (
         SELECT window_started_at, window_expires_at, danger_confirmed_at
@@ -1659,6 +1704,7 @@ async function resolveAutomaticSpamDetectionEventAndCloseWindow(id, {
         WHERE id = $1
           AND guild_id = $2
           AND user_id = $3
+          AND status = 'danger'
       ),
       guarded_window AS (
         SELECT *
@@ -1742,9 +1788,10 @@ async function appendAutomaticSpamDetectionWindowFollowup({
   attachmentCount,
   messageAt,
   protectedEvidence = false,
-}) {
+}, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       WITH inserted AS (
         INSERT INTO automatic_spam_detection_event_messages (
@@ -1796,6 +1843,8 @@ async function appendAutomaticSpamDetectionWindowFollowup({
             WHEN event.last_followup_at IS NULL OR inserted.message_at >= event.last_followup_at THEN inserted.attachment_count
             ELSE event.last_followup_attachment_count
           END,
+          evidence_deleted_by = NULL,
+          evidence_deleted_at = NULL,
           updated_at = NOW()
       FROM inserted
       WHERE event.id = inserted.event_id
@@ -1818,9 +1867,10 @@ function mapAutomaticSpamDetectionEvidenceMessage(row) {
   };
 }
 
-async function getAutomaticSpamDetectionEvidenceMessages(eventId) {
+async function getAutomaticSpamDetectionEvidenceMessages(eventId, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       SELECT *
       FROM automatic_spam_detection_evidence_messages
@@ -1832,9 +1882,10 @@ async function getAutomaticSpamDetectionEvidenceMessages(eventId) {
   return res.rows.map(mapAutomaticSpamDetectionEvidenceMessage);
 }
 
-async function markAutomaticSpamDetectionEvidenceDeleted(eventId, messageId) {
+async function markAutomaticSpamDetectionEvidenceDeleted(eventId, messageId, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       UPDATE automatic_spam_detection_evidence_messages
       SET deleted_at = COALESCE(deleted_at, NOW()),
@@ -1845,6 +1896,23 @@ async function markAutomaticSpamDetectionEvidenceDeleted(eventId, messageId) {
     [eventId, messageId]
   );
   return res.rowCount > 0;
+}
+
+async function completeAutomaticSpamDetectionEvidenceDeletion(eventId, guildId, deletedBy, dbClient = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE automatic_spam_detection_events
+      SET evidence_deleted_by = COALESCE(evidence_deleted_by, $3),
+          evidence_deleted_at = COALESCE(evidence_deleted_at, NOW()),
+          updated_at = NOW()
+      WHERE id = $1 AND guild_id = $2
+      RETURNING *
+    `,
+    [eventId, guildId, deletedBy]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
 async function reserveAiVisionDailyUsageForEvent(eventId, guildId, usageDate, limit) {
@@ -2235,6 +2303,7 @@ module.exports = {
   getGuildConfig,
   getSpamCatcherConfig,
   withGuildConfigLock,
+  withAutomaticSpamDetectionEventLock,
   saveSpamCatcherConfig,
   setGuildAiVisionDailyLimit,
   listSpamCatcherConfigs,
@@ -2261,6 +2330,7 @@ module.exports = {
   appendAutomaticSpamDetectionWindowFollowup,
   getAutomaticSpamDetectionEvidenceMessages,
   markAutomaticSpamDetectionEvidenceDeleted,
+  completeAutomaticSpamDetectionEvidenceDeletion,
   getAutomaticSpamDetectionEventById,
   getLatestOpenAutomaticSpamDetectionDangerEvent,
   getAutomaticSpamDetectionEventsByUser,

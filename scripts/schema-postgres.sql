@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   review_message_id TEXT,
   decided_by TEXT,
   decision_error TEXT,
+  evidence_deleted_by TEXT,
+  evidence_deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -111,6 +113,12 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage_reservations (
 
 ALTER TABLE automatic_spam_detection_users
   ADD COLUMN IF NOT EXISTS last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS evidence_deleted_by TEXT;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS evidence_deleted_at TIMESTAMPTZ;
 
 ALTER TABLE automatic_spam_detection_ai_usage_reservations
   ADD COLUMN IF NOT EXISTS closed_by_reset BOOLEAN NOT NULL DEFAULT FALSE;

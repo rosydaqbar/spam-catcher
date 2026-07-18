@@ -452,9 +452,10 @@ The delayed-ban loop checks due work every `30 seconds`. Restarting the process 
 
 - Discord Administrators are ignored by both moderation features.
 - Caught Trap Channel messages are not deleted.
-- Automatic Attachment Detection never deletes evidence automatically. Administrators can use **Delete Evidence** on the incident card after AI Verdict finishes; configured trap-channel messages are always preserved.
+- Automatic Attachment Detection never deletes evidence automatically. Administrators can use **Delete Evidence** on the incident card after AI Verdict finishes; configured trap-channel messages are always preserved. A completed deletion records the Administrator in Moderation State and disables the button, while failed deletions remain retryable.
 - Caught totals are incident counts, not distinct-user counts.
 - Review cards allow Administrators to remove a timeout or ban the user.
+- Successfully resolved Automatic Attachment Detection cards collapse to Incident and Moderation State summaries; Administrators can use **Show Details** for the full read-only ephemeral record.
 - Removing a timeout cancels the scheduled Spam Catcher ban for that incident.
 - Missing members are treated as expected leave, kick, or ban cases instead of runtime errors.
 - Automatic Attachment Detection never processes messages in active trap channels.

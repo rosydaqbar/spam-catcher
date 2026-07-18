@@ -230,6 +230,8 @@ You should see these tables:
 - `automatic_spam_detection_ai_usage_reservations`
 - `ai_vision_daily_limit_bypass_guilds`
 
+Completed incident-card evidence deletion stores its Administrator and completion time on `automatic_spam_detection_events`.
+
 ### 7. Add PostgreSQL To `.env`
 
 Open the project's `.env` file and set:

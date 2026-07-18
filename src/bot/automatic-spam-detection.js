@@ -357,15 +357,6 @@ function createAutomaticSpamDetectionManager({
       `**${t('automatic.spammerState')}:** \`${spammerStateText(userState, t)}\``,
       `**${t('automatic.spammerCount')}:** \`${userState?.spammerCount || 0}\``,
       timeoutLine,
-      successfulResolution && event.timeoutStatus === 'applied'
-        ? `**${t('automatic.timeoutSetBy')}:** ${t('automatic.timeoutSetAutomatically')}`
-        : null,
-      successfulResolution && event.timeoutStatus === 'already_active'
-        ? `**${t('automatic.timeoutSetBy')}:** ${t('automatic.timeoutSetterUnknown')}`
-        : null,
-      successfulResolution && event.timeoutStatus !== 'applied' && event.timeoutStatus !== 'already_active'
-        ? `**${t('automatic.timeoutAttemptedBy')}:** ${t('automatic.timeoutSetAutomatically')}`
-        : null,
       `**${t('automatic.status')}:** ${statusText(event, t)}`,
       event.evidenceDeletedBy && event.evidenceDeletedAt
         ? `**${t('automatic.evidenceDeletionState')}:** ${t('automatic.evidenceDeletedBy', {

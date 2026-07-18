@@ -427,28 +427,38 @@ Quick overview of the moderation flow.
 - First qualifying attachment message opens an Alert window.
 - No moderation action is applied yet.
 
-[Screenshot]
-
 ### 2. Danger Detected
 
 - Second qualifying message confirms one Danger incident.
 - Later qualifying messages update the same review card.
 
-[Screenshot]
+<img width="667" height="728" alt="image" src="https://github.com/user-attachments/assets/d2c1c140-14fc-477e-ae2a-9f91b71d4e89" />
+
 
 ### 3. Timed Out
-
 - The configured Automatic Detection timeout is applied immediately.
 - Administrators can remove it for a false positive.
+#### Getting timed out (User)
+<img width="665" height="394" alt="image" src="https://github.com/user-attachments/assets/5ac10b68-e703-497d-90c1-c6aac0dd3f20" />
+#### Appeal Mistake (User)
+<img width="486" height="368" alt="image" src="https://github.com/user-attachments/assets/0e8b76d0-078c-45c3-82c3-98db023afb8e" />
 
-[Screenshot]
+#### Removing timeout (Admin)
+<img width="683" height="515" alt="image" src="https://github.com/user-attachments/assets/4f1833ba-17e5-49e1-a2dd-c186007c0dd4" />
+#### User Making Appeal (Admin)
+<img width="690" height="916" alt="image" src="https://github.com/user-attachments/assets/05a3689b-2070-4951-8b23-f0b894b593db" />
+
 
 ### 4. Banned
 
 - Automatic Detection requires an Administrator to confirm **Ban User**.
 - Spam Catcher Auto Ban can run immediately, when the timeout ends, or after the delayed appeal window.
 
-[Screenshot]
+#### Banned user (Admin)
+<img width="670" height="517" alt="image" src="https://github.com/user-attachments/assets/453a5122-ccc0-4e5c-afb4-8218b7164d0e" />
+#### Banned from Automatic Banning System
+<img width="424" height="258" alt="image" src="https://github.com/user-attachments/assets/eaa1e8e4-ba90-483c-af39-99dacbaa1ff4" />
+
 
 ### 5. Delete Evidence
 
@@ -456,7 +466,8 @@ Quick overview of the moderation flow.
 - Removes stored Alert, trigger, and follow-up messages outside protected trap channels.
 - Completed or already-deleted evidence disables the button; failures remain retryable.
 
-[Screenshot]
+<img width="351" height="167" alt="image" src="https://github.com/user-attachments/assets/1529a4b1-1003-4483-819d-7dcee656cdc0" />
+
 
 ---
 

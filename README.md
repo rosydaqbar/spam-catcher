@@ -332,12 +332,69 @@ Saved channels are preselected when the setup panel is reopened, and changes are
 
 Opens the Discord Components V2 setup dashboard for Administrators. Each summary displays saved settings and opens an ephemeral editing panel.
 
-- `Spam Catcher Summary`: Trap Channel enable state and configured timeout/ban outcome
-- `Channels / Timeout Summary`: trap channels, review channel, log channel, and timeout duration
-- `Auto Ban Summary`: Auto Ban enable state, mode, and appeal timing
-- `Automatic Spam Detection Summary`: enable state, attachment threshold/window, timeout duration, AI state and quota, timezone, and log channel
-- `AI Verdict Checker`: trigger words, confidence threshold, daily quota, and provider readiness
-- `Trap Notices Summary`: configured trap-channel count and whether notices are ready to post
+#### Spam Catcher Summary
+
+- Trap Channel enable state.
+- Current timeout or ban outcome.
+
+[Screenshot]
+
+#### Channels / Timeout Summary
+
+- Trap, review, and log channels.
+- Timeout duration applied to Trap Channel incidents.
+
+[Screenshot]
+
+#### Auto Ban Summary
+
+- Auto Ban enable state and selected mode.
+- Appeal-window timing when delayed banning is selected.
+- **Auto Ban Off** keeps timeout-only moderation.
+
+[Screenshot]
+
+##### Ban After Appeal Window
+
+- Applies the configured timeout first.
+- Bans after the selected appeal window unless an Administrator resolves the incident.
+
+[Screenshot]
+
+##### Ban Immediately
+
+- Bans as soon as the Trap Channel incident is created.
+- Does not apply a timeout or wait for an appeal window.
+
+[Screenshot]
+
+##### Ban After Timeout Ends
+
+- Applies the configured timeout first.
+- Bans when that timeout expires.
+
+[Screenshot]
+
+#### Automatic Spam Detection Summary
+
+- Enable state, attachment threshold, detection window, and timeout duration.
+- AI state, daily quota, timezone, and log channel.
+
+[Screenshot]
+
+#### AI Verdict Checker
+
+- Trigger words and confidence threshold.
+- Daily quota and provider readiness.
+
+[Screenshot]
+
+#### Trap Notices Summary
+
+- Configured Trap Channel count.
+- Notice readiness and posting controls.
+
+[Screenshot]
 
 ### 🌐 `/spam-catcher lang`
 
@@ -420,54 +477,73 @@ Notice failures are logged with the `[spam-catcher-setup]` prefix. Logs include 
 
 ## 🧭 Automatic Detection Flow
 
-Quick overview of the moderation flow.
+Who sees each step, what happens, and when.
 
 ### 1. Triggered
 
-- First qualifying attachment message opens an Alert window.
-- No moderation action is applied yet.
+- **Default trigger:** one message with `2+` attachments.
+- **Default timer:** opens a `10-minute` Alert window for that user.
+- **Action:** records the activity; no moderation yet.
+
+#### User Activity: First Qualifying Message
+
+[Screenshot]
 
 ### 2. Danger Detected
 
-- Second qualifying message confirms one Danger incident.
-- Later qualifying messages update the same review card.
+- **Condition:** the same user sends another `2+` attachment message before the Alert window expires.
+- **Action:** creates one Danger incident and review card.
+- **Follow-ups:** later qualifying messages update the same incident without repeating moderation.
 
-<img width="667" height="728" alt="image" src="https://github.com/user-attachments/assets/d2c1c140-14fc-477e-ae2a-9f91b71d4e89" />
+#### Administrator View: Danger Review Card
 
+<img width="667" height="728" alt="Automatic Detection Danger review card" src="https://github.com/user-attachments/assets/d2c1c140-14fc-477e-ae2a-9f91b71d4e89" />
 
 ### 3. Timed Out
-- The configured Automatic Detection timeout is applied immediately.
-- Administrators can remove it for a false positive.
-#### Getting timed out (User)
-<img width="665" height="394" alt="image" src="https://github.com/user-attachments/assets/5ac10b68-e703-497d-90c1-c6aac0dd3f20" />
-#### Appeal Mistake (User)
-<img width="486" height="368" alt="image" src="https://github.com/user-attachments/assets/0e8b76d0-078c-45c3-82c3-98db023afb8e" />
 
-#### Removing timeout (Admin)
-<img width="683" height="515" alt="image" src="https://github.com/user-attachments/assets/4f1833ba-17e5-49e1-a2dd-c186007c0dd4" />
-#### User Making Appeal (Admin)
-<img width="690" height="916" alt="image" src="https://github.com/user-attachments/assets/05a3689b-2070-4951-8b23-f0b894b593db" />
+- **Action:** applies the configured timeout immediately after Danger is confirmed.
+- **Default duration:** `28 days` for Automatic Detection.
+- **Appeal:** the user can explain a mistake; an Administrator can review it and remove the timeout.
 
+#### User View: Timeout Notice
+
+<img width="665" height="394" alt="User timeout notification" src="https://github.com/user-attachments/assets/5ac10b68-e703-497d-90c1-c6aac0dd3f20" />
+
+#### User View: Submit an Appeal
+
+<img width="486" height="368" alt="User appeal form" src="https://github.com/user-attachments/assets/0e8b76d0-078c-45c3-82c3-98db023afb8e" />
+
+#### Administrator View: Remove Timeout
+
+<img width="683" height="515" alt="Administrator timeout removal confirmation" src="https://github.com/user-attachments/assets/4f1833ba-17e5-49e1-a2dd-c186007c0dd4" />
+
+#### Administrator View: Review an Appeal
+
+<img width="690" height="916" alt="Administrator view of user appeal" src="https://github.com/user-attachments/assets/05a3689b-2070-4951-8b23-f0b894b593db" />
 
 ### 4. Banned
 
-- Automatic Detection requires an Administrator to confirm **Ban User**.
-- Spam Catcher Auto Ban can run immediately, when the timeout ends, or after the delayed appeal window.
+- **Automatic Detection:** an Administrator must confirm **Ban User**.
+- **Spam Catcher Auto Ban:** runs immediately, when the timeout ends, or after the appeal window.
+- **Trap defaults:** `60-minute` timeout and `10-minute` appeal window; both are configurable.
 
-#### Banned user (Admin)
-<img width="670" height="517" alt="image" src="https://github.com/user-attachments/assets/453a5122-ccc0-4e5c-afb4-8218b7164d0e" />
-#### Banned from Automatic Banning System
-<img width="424" height="258" alt="image" src="https://github.com/user-attachments/assets/eaa1e8e4-ba90-483c-af39-99dacbaa1ff4" />
+#### Administrator View: Resolved Ban
 
+<img width="670" height="517" alt="Resolved banned-user incident card" src="https://github.com/user-attachments/assets/453a5122-ccc0-4e5c-afb4-8218b7164d0e" />
+
+#### User View: Automatic Ban Notice
+
+<img width="424" height="258" alt="Automatic ban notification" src="https://github.com/user-attachments/assets/eaa1e8e4-ba90-483c-af39-99dacbaa1ff4" />
 
 ### 5. Delete Evidence
 
-- Available after AI Verdict finishes when enabled.
-- Removes stored Alert, trigger, and follow-up messages outside protected trap channels.
-- Completed or already-deleted evidence disables the button; failures remain retryable.
+- **Availability:** immediate when AI Verdict is off, or after its analysis finishes when enabled.
+- **Action:** deletes stored Alert, trigger, and follow-up messages outside protected trap channels.
+- **Result:** completion records the Administrator and disables the button; failures remain retryable.
 
-<img width="351" height="167" alt="image" src="https://github.com/user-attachments/assets/1529a4b1-1003-4483-819d-7dcee656cdc0" />
+#### Administrator View: Evidence Deletion Result
 
+<img width="351" height="167" alt="Evidence deletion result" src="https://github.com/user-attachments/assets/1529a4b1-1003-4483-819d-7dcee656cdc0" />
 
 ---
 

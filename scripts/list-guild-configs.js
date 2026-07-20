@@ -18,11 +18,13 @@ function parseArgs(argv) {
 function summarize(row) {
   return {
     guildId: row.guildId,
+    requiredChannelsSet: row.config.requiredChannelsSet,
     enabled: row.config.enabled,
     trapChannelCount: row.config.channelIds.length,
     logChannelId: row.config.logChannelId,
     reviewChannelId: row.config.reviewChannelId,
     banMode: row.config.banMode,
+    autoBanEnabled: row.config.autoBanEnabled,
     automaticSpamDetectionEnabled: row.config.automaticSpamDetectionEnabled,
     aiVisionSpamCheckEnabled: row.config.aiVisionSpamCheckEnabled,
     aiVisionDailyLimit: row.config.aiVisionDailyLimit,

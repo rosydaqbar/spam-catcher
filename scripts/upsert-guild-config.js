@@ -17,8 +17,8 @@ const USAGE = `Usage:
 Options:
   --guild-id <id>             Required Discord guild/server ID.
   --trap-channel-ids <ids>    Required comma-separated trap text channel IDs.
-  --review-channel-id <id>    Required admin review channel ID.
-  --log-channel-id <id>       Optional admin log channel ID.
+  --review-channel-id <id>    Required admin Review Channel ID.
+  --log-channel-id <id>       Required admin Log Channel ID.
   --enabled <true|false>      Defaults to true.
   --timeout-minutes <number>  Defaults to 60.
   --auto-ban <true|false>     Defaults to false.
@@ -116,11 +116,17 @@ async function main() {
   requireRuntimeEnv();
 
   const guildId = parseId(args.guildId, '--guild-id');
+  const logChannelId = parseId(args.logChannelId, '--log-channel-id');
+  const reviewChannelId = parseId(args.reviewChannelId, '--review-channel-id');
+  if (logChannelId === reviewChannelId) {
+    throw new Error('--log-channel-id and --review-channel-id must be different channels.');
+  }
   const config = configStore.normalizeSpamCatcherConfig({
     enabled: parseBoolean(args.enabled, true),
+    requiredChannelsSet: 1,
     channelIds: parseIdList(args.trapChannelIds, '--trap-channel-ids'),
-    logChannelId: parseId(args.logChannelId, '--log-channel-id', { required: false }),
-    reviewChannelId: parseId(args.reviewChannelId, '--review-channel-id'),
+    logChannelId,
+    reviewChannelId,
     timeoutMinutes: parseNumber(args.timeoutMinutes, 60),
     autoBanEnabled: parseBoolean(args.autoBan, false),
     banMode: args.banMode || 'delayed',
@@ -137,6 +143,7 @@ async function main() {
     ok: true,
     guildId,
     enabled: saved.enabled,
+    requiredChannelsSet: saved.requiredChannelsSet,
     trapChannelCount: saved.channelIds.length,
     logChannelId: saved.logChannelId,
     reviewChannelId: saved.reviewChannelId,

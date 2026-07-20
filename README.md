@@ -83,22 +83,23 @@ Detection follows one fixed window:
 
 1. A message with `2+` attachments starts a `10 minute` Alert window.
 2. The next message from the same user with `2+` attachments inside that window creates one Danger incident.
-3. The bot immediately marks the user as a spammer, increments their incident count once, applies the timeout, sends the timeout DM, and posts a Danger card.
+3. The bot immediately marks the user as a spammer, increments their incident count once, applies the timeout, sends the timeout DM, and posts one actionable Danger card to the Review Channel. Each lifecycle transition is also recorded as a separate compact Log entry.
 4. The Danger card provides a **Delete Evidence** button for Administrators. Nothing is deleted automatically, and configured trap-channel messages are always preserved.
 5. Later qualifying messages inside the same window update the original incident with affected channels, message and attachment totals, and latest activity. They do not repeat moderation or AI analysis.
 6. After the window expires, the next qualifying message starts a new Alert window.
 
 Same-channel and cross-channel repeats both create Danger incidents. Removing the timeout, successfully banning the user, or finding that the member is no longer in the guild closes the active window. If the user can send messages in the guild again, their next qualifying message starts a new Alert window.
 
-The Danger action:
+After Danger is confirmed, the shared moderation policy:
 
 - sets the active spammer flag
 - increments the user's stored incident count once
-- applies the configured Automatic Detection timeout, which defaults to `28 days`
-- posts one Danger card in the configured log channel
-- sends the shared timeout and appeal DM if Discord accepts the DM
+- applies the configured Automatic Detection timeout, which defaults to `28 days`, unless immediate-ban mode is selected
+- schedules or immediately executes Auto Ban when enabled
+- posts one actionable Danger card in the configured Review Channel and compact audit entries in the Log Channel
+- sends the matching timeout/appeal or ban DM if Discord accepts the DM
 
-Danger cards display moderation and AI statuses separately. When an incident is resolved, the card becomes an Attachment Spam Summary Log instead of being deleted.
+Danger cards in the Review Channel display moderation and AI statuses separately. When an incident is resolved, the Review card becomes a compact summary instead of being deleted. The Log Channel receives short append-only records for alerts, detection, moderation, AI, follow-ups, appeals, evidence operations, and administrator actions; it never receives a copy of the Review card.
 
 </details>
 
@@ -107,24 +108,24 @@ Danger cards display moderation and AI statuses separately. When an incident is 
 
 AI Verdict is an optional Automatic Attachment Detection add-on. It never runs for Trap Channel events.
 
-When enabled, AI Verdict runs once in the background after the Danger action. Moderation does not wait for AI. The result updates the existing Danger card without applying, repeating, or reversing moderation.
+When enabled, AI Verdict runs once after Danger is confirmed and the shared moderation policy has started. It updates the existing Review card with its result but never delays, removes, or changes the timeout or ban.
 
 AI Verdict behavior:
 
 - Requires `OPENROUTER_API_KEY` or `GEMINI_API_KEY`.
 - Uses OpenRouter when configured; Gemini is used only when OpenRouter is not configured.
 - Defaults to OpenRouter model `xiaomi/mimo-v2.5` or Gemini model `gemini-2.5-flash`. These were chosen as the cheapest suitable image-capable options at the time of selection, not as requirements. You can replace either with any compatible model supported by that provider.
-- Analyzes only the first supported image from the message that created the Danger incident.
+- Analyzes only the first supported image from the message that triggered evaluation.
 - Returns a caption, OCR matches, and confidence score.
 - Matches OCR text against the guild's configured trigger words.
 - Defaults to a confidence threshold of `0.7`.
 - Runs through a per-guild queue with at most `2` concurrent analyses.
 
-The default quota is `3` verdicts per guild per day. The quota resets using the guild's configured timezone, which defaults to `UTC`. The setup panel displays the current usage, and the first quota-counted verdict on a new guild-local date sends a reset notice to the log channel.
+The default quota is `3` verdicts per guild per day. The quota resets using the guild's configured timezone, which defaults to `UTC`. The setup panel displays the current usage, and the first quota-counted verdict on a new guild-local date sends a reset notice to the Log Channel.
 
 OpenRouter image URL, base64 fallback, and JSON retry attempts count as one bot verdict. If every failed attempt is explicitly unbilled, the bot refunds that event's quota slot. Explicitly unbilled means OpenRouter reports `usage.cost = 0`, reports zero completion tokens with an error or no finish reason, or rejects the request before generation. Billed or unknown malformed responses remain counted.
 
-If the quota is exhausted, no provider request is made. The existing Danger card is updated with the quota result. Guild IDs in `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS` bypass only this daily quota.
+If the quota is exhausted, no provider request is made. Moderation is unaffected, and the existing Review card records the quota result. Guild IDs in `AI_VISION_DAILY_LIMIT_BYPASS_GUILD_IDS` bypass only this daily quota.
 
 </details>
 
@@ -144,7 +145,7 @@ Trap Channel incidents support these timeout durations:
 - `14 Days`
 - `28 Days`
 
-Trap Channel Auto Ban modes:
+Shared Auto Ban modes for Trap Channels and Automatic Detection:
 
 - `Auto Ban Off`: apply the timeout without scheduling a ban
 - `Ban After Appeal Window`: apply the timeout, then ban after the selected appeal period
@@ -314,13 +315,14 @@ Run this command as a Discord Administrator:
 /spam-catcher setup
 ```
 
-New guilds are disabled by default. Select the required channels and enable the features you want to use.
+New guilds are disabled by default. Setup is split into two required stages:
 
-- Trap Channels require at least one trap channel, a review channel, and a log channel before they can be enabled.
-- Automatic Attachment Detection is independent and requires only a log channel.
-- AI Verdict requires Automatic Attachment Detection plus an OpenRouter or Gemini API key.
+1. Select separate Log and Review Channels. Stage 2 remains locked until the bot can view and send messages in both.
+2. Configure Trap Channels, Automatic Detection, AI Verdict, and the shared Auto Ban policy.
 
-Saved channels are preselected when the setup panel is reopened, and changes are stored immediately.
+Existing guilds with valid, separate saved Log and Review Channels are migrated directly to Stage 2. If either required channel is deleted, inaccessible, or set to the same destination, protection is disabled and setup returns to Stage 1. Saved channels are preselected and changes are stored immediately.
+
+Every saved setup change posts an action-free audit record to the Log Channel with the Administrator and the previous and new values. Changing the Log Channel writes the record to both the old and new destinations; resetting setup writes the record to the previous Log Channel.
 
 <img width="521" height="829" alt="Spam Catcher Discord setup dashboard" src="https://github.com/user-attachments/assets/75e2c2e2-5310-4ac4-a16b-e8430d028fb4" />
 
@@ -330,30 +332,35 @@ Saved channels are preselected when the setup panel is reopened, and changes are
 
 ### 🛠️ `/spam-catcher setup`
 
-Opens the Discord Components V2 setup dashboard for Administrators. The dashboard has five panels; AI Verdict is a separate function inside the Automatic Detection panel.
+Opens the Discord Components V2 setup dashboard for Administrators. Stage 1 verifies required channels. Stage 2 is a summary dashboard for Trap Channels, Automatic Detection with AI Verdict, and shared Auto Ban in that order. Each **Open Settings** button replaces the same ephemeral message with one focused settings panel and a **Back to Dashboard** button.
 
-#### 1. Spam Catcher
+#### Stage 1: Required Channels
 
-- **Purpose:** turn Trap Channel moderation on or off.
-- **Controls:** enable or disable Spam Catcher and review its readiness and current moderation outcome.
-- **Different from:** this is the master Trap Channel switch; channels and ban timing are configured below.
+- **Purpose:** keep informational records separate from cards that require moderator action.
+- **Controls:** select one Log Channel for action-free records and one different Review Channel for moderation cards and appeals.
+- **Gate:** Stage 2 unlocks only after both channels are different, exist, and allow the bot to view and send messages.
 
 [Screenshot]
 
-#### 2. Channels & Timeout
+#### Stage 2.1: Trap Channels
 
-- **Purpose:** choose where Trap Channel incidents happen and where staff review them.
-- **Controls:** select trap, review, and log channels, then choose the Trap Channel timeout duration.
-- **Different from:** controls channel routing and timeout length, not Auto Ban or Automatic Detection.
+- **Purpose:** choose where Trap Channel incidents happen.
+- **Controls:** select trap channels, choose the Trap timeout, enable protection, and post/update notices.
 
 <img width="665" height="532" alt="image" src="https://github.com/user-attachments/assets/e2febad4-b8b8-4b6f-92aa-5853556688f3" />
 
 
-#### 3. Auto Ban
+#### Stage 2.2: Automatic Detection
 
-- **Purpose:** decide whether and when Trap Channel incidents become bans.
+- **Purpose:** detect repeated attachment bursts outside active Trap Channels.
+- **Controls:** enable detection and configure the optional AI Verdict gate.
+- **AI behavior:** moderation starts immediately. AI Verdict runs afterward and updates the Review card without delaying or changing the timeout or ban.
+
+#### Stage 2.3: Auto Ban
+
+- **Purpose:** decide whether and when incidents from either protection system become bans.
 - **Controls:** enable or disable Auto Ban, choose one of three ban modes, and set the appeal window when required.
-- **Different from:** applies only to Trap Channel incidents; Automatic Detection bans still require Administrator confirmation.
+- **Scope:** applies to both Trap Channels and Automatic Detection using each source's configured timeout duration.
 - **Off state:** **Auto Ban Off** keeps timeout-only moderation.
 
 ##### 3.1 Ban After Appeal Window
@@ -377,24 +384,24 @@ Opens the Discord Components V2 setup dashboard for Administrators. The dashboar
 <img width="657" height="266" alt="image" src="https://github.com/user-attachments/assets/8d52aa08-04bd-4ae3-ae29-c400921b93cf" />
 
 
-#### 4. Automatic Detection
+#### Automatic Detection Details
 
 - **Purpose:** detect repeated attachment bursts outside active Trap Channels.
-- **Controls:** enable or disable detection and review its attachment threshold, fixed window, timeout, and log channel.
+- **Controls:** enable or disable detection and review its attachment threshold, fixed window, timeout, Review destination, and Log destination.
 - **Different from:** works independently from Trap Channels and never processes messages inside an active trap.
 
 <img width="673" height="584" alt="image" src="https://github.com/user-attachments/assets/e1d17767-4fab-4635-b21f-f1a653e0b016" />
 
 
-#### 5. AI Verdict (Inside Automatic Detection)
+#### AI Verdict (Inside Automatic Detection)
 
-- **Purpose:** add image-analysis evidence to an Automatic Detection incident.
+- **Purpose:** add optional image analysis to an Automatic Detection incident after moderation starts.
 - **Controls:** enable or disable AI Verdict, edit trigger words, and review confidence, quota, timezone, and provider readiness.
-- **Different from:** evidence only; it never delays, repeats, reverses, or independently applies moderation.
+- **Behavior:** the shared moderation policy applies immediately. AI match, no match, low confidence, provider failure, unsupported image, and exhausted quota update the existing Review card only.
 <img width="629" height="257" alt="image" src="https://github.com/user-attachments/assets/6e95e98c-fd9e-4f52-a09a-e4d09a471312" />
 
 
-#### 6. Trap Notices
+#### Trap Notices
 
 - **Purpose:** warn users before they post in configured Trap Channels.
 - **Controls:** post or refresh the localized warning message in every configured trap.
@@ -413,6 +420,10 @@ Sets the guild's interface language:
 ```
 
 The selected language applies to setup panels, trap notices, Danger cards, timeout DMs, appeal modals, and shared moderation messages. Supported stored values are `en` and `id`.
+
+### ♻️ `/spam-catcher reset-setup`
+
+Returns the guild to Stage 1 after confirmation. It clears setup channels and feature settings, disables protection, closes active Automatic Detection windows, and cancels scheduled bans. Historical incidents and existing Discord messages are preserved.
 
 ### 🔎 `/spam-catcher check`
 
@@ -499,8 +510,12 @@ Who sees each step, what happens, and when.
 ### 2. Danger Detected
 
 - **Condition:** the same user sends another `2+` attachment message before the Alert window expires.
-- **Action:** creates one Danger incident and review card.
+- **AI disabled:** confirms one Danger incident and applies the shared moderation policy.
+- **AI enabled:** confirms Danger and applies moderation immediately, then evaluates the first supported trigger image in the background.
+- **AI result:** match, no match, low confidence, analysis failure, unsupported image, or exhausted quota updates the existing Review card without changing moderation.
 - **Follow-ups:** later qualifying messages update the same incident without repeating moderation.
+- **Review Channel:** receives the actionable Danger card with the available moderation and evidence controls.
+- **Log Channel:** receives compact append-only records for every lifecycle and administrator action, but never the full Danger or Summary card.
 
 #### Administrator View: Danger Review Card
 
@@ -508,7 +523,7 @@ Who sees each step, what happens, and when.
 
 ### 3. Timed Out
 
-- **Action:** applies the configured timeout immediately after Danger is confirmed.
+- **Action:** applies the configured timeout after Danger is confirmed when the shared policy uses a timeout. Immediate-ban mode skips this step.
 - **Default duration:** `28 days` for Automatic Detection.
 - **Appeal:** the user can explain a mistake; an Administrator can review it and remove the timeout.
 
@@ -530,8 +545,8 @@ Who sees each step, what happens, and when.
 
 ### 4. Banned
 
-- **Automatic Detection:** an Administrator must confirm **Ban User**.
-- **Spam Catcher Auto Ban:** runs immediately, when the timeout ends, or after the appeal window.
+- **Shared Auto Ban:** applies to Trap and Automatic Detection incidents immediately, when the source-specific timeout ends, or after the appeal window.
+- **Manual action:** Administrators can still confirm **Ban User** from actionable incident cards.
 - **Trap defaults:** `60-minute` timeout and `10-minute` appeal window; both are configurable.
 
 #### Administrator View: Resolved Ban
@@ -591,15 +606,23 @@ The delayed-ban loop checks due work every `30 seconds`. Restarting the process 
 - Automatic Attachment Detection never deletes evidence automatically. Administrators can use **Delete Evidence** on the incident card after AI Verdict finishes; configured trap-channel messages are always preserved. A completed deletion records the Administrator in Moderation State and disables the button, while failed deletions remain retryable.
 - Caught totals are incident counts, not distinct-user counts.
 - Review cards allow Administrators to remove a timeout or ban the user.
+- Automatic Detection action controls are posted only in the Review Channel. Log records are separately built, compact, append-only, and contain no moderation controls.
 - Successfully resolved Automatic Attachment Detection cards collapse to Incident and Moderation State summaries. The summary identifies the resolving Administrator and, when applicable, the evidence-deletion Administrator without showing timeout attribution; Administrators can use **Show Details** for the full read-only ephemeral record.
 - Removing a timeout cancels the scheduled Spam Catcher ban for that incident.
 - Missing members are treated as expected leave, kick, or ban cases instead of runtime errors.
 - Automatic Attachment Detection never processes messages in active trap channels.
-- AI Verdict failure or quota exhaustion never delays or cancels the immediate Danger action.
+- AI Verdict failure, low confidence, no match, or quota exhaustion does not delay or change the timeout or ban already applied by Automatic Detection.
 
 ---
 
 ## 📝 Changelog
+
+### 2026-07-20
+
+- Reworked setup into required-channel and protection-settings stages, with automatic migration and `/spam-catcher reset-setup`.
+- Unified Auto Ban behavior across Trap Channels and Automatic Detection.
+- Restored immediate Automatic Detection moderation with AI Verdict running afterward as a background Review-card update.
+- Routed active Automatic Detection moderation cards only to the Review Channel and completed outcomes to the Log Channel.
 
 ### 2026-07-18
 

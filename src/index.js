@@ -36,35 +36,45 @@ const client = new Client({
   ],
 });
 
-const spamCatcherManager = createSpamCatcherManager({
-  client,
-  configStore,
-});
 const automaticSpamDetectionManager = createAutomaticSpamDetectionManager({
   client,
   configStore,
   runGuildConfigOperation,
 });
+const spamCatcherManager = createSpamCatcherManager({
+  client,
+  configStore,
+  runGuildConfigOperation,
+  runAutomaticScheduledBansOnce: automaticSpamDetectionManager.runScheduledBansOnce,
+});
+
+function invalidateGuildConfig(guildId) {
+  spamCatcherManager.invalidateGuildConfig(guildId);
+  automaticSpamDetectionManager.invalidateGuildConfig(guildId);
+}
+
+async function resetGuildRuntimeState(guildId) {
+  await Promise.all([
+    spamCatcherManager.resetGuildRuntimeState(guildId),
+    automaticSpamDetectionManager.resetGuildRuntimeState(guildId),
+  ]);
+}
+
 const superAdminCommandManager = createSuperAdminCommandManager({
   client,
   configStore,
   runAutomaticUserReset: automaticSpamDetectionManager.runUserStateReset,
   runSpamCatcherUserReset: spamCatcherManager.runUserStateReset,
   runGuildConfigOperation,
-  invalidateGuildConfig: (guildId) => {
-    spamCatcherManager.invalidateGuildConfig(guildId);
-    automaticSpamDetectionManager.invalidateGuildConfig(guildId);
-  },
+  invalidateGuildConfig,
 });
 const setupCommandManager = createSetupCommandManager({
   client,
   configStore,
   additionalCommands: [superAdminCommandManager.commandData()].filter(Boolean),
   runGuildConfigOperation,
-  invalidateGuildConfig: (guildId) => {
-    spamCatcherManager.invalidateGuildConfig(guildId);
-    automaticSpamDetectionManager.invalidateGuildConfig(guildId);
-  },
+  invalidateGuildConfig,
+  resetGuildRuntimeState,
 });
 
 let shuttingDown = false;

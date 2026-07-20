@@ -2,6 +2,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   MessageFlags,
   PermissionFlagsBits,
 } = require('discord.js');
@@ -11,7 +12,7 @@ const {
   TextDisplayBuilder,
 } = require('@discordjs/builders');
 const { parseAllowedGuildIds } = require('./env');
-const { createModerationWorkflow } = require('./moderation-workflow');
+const { createModerationWorkflow, planModerationPolicy } = require('./moderation-workflow');
 const { buildTrapNoticePayload } = require('./trap-notice-payload');
 
 const BAN_USER_PREFIX = 'spamcatcher_ban_user';
@@ -20,11 +21,16 @@ const REMOVE_TIMEOUT_CONFIRM_PREFIX = 'spamcatcher_remove_timeout_confirm';
 const REMOVE_TIMEOUT_CANCEL_PREFIX = 'spamcatcher_remove_timeout_cancel';
 const DELAYED_BAN_INTERVAL_MS = 30 * 1000;
 const CONFIG_CACHE_TTL_MS = 5000;
-const DISCORD_TIMEOUT_MAX_MS = (28 * 24 * 60 * 60 * 1000) - 60_000;
 
-function createSpamCatcherManager({ client, configStore }) {
+function createSpamCatcherManager({
+  client,
+  configStore,
+  runGuildConfigOperation = async (_guildId, task) => task(),
+  runAutomaticScheduledBansOnce = async () => {},
+}) {
   const allowedGuildIds = parseAllowedGuildIds();
   const configCache = new Map();
+  const configGenerationByGuild = new Map();
   const userOperationByKey = new Map();
   let banInterval = null;
   let delayedBanRunning = false;
@@ -65,6 +71,50 @@ function createSpamCatcherManager({ client, configStore }) {
   function existingTimeoutUntil(member) {
     const until = member?.communicationDisabledUntilTimestamp;
     return Number.isFinite(until) && until > Date.now() ? new Date(until) : null;
+  }
+
+  function invalidateGuildConfigGeneration(guildId) {
+    configCache.delete(guildId);
+    configGenerationByGuild.set(guildId, (configGenerationByGuild.get(guildId) || 0) + 1);
+  }
+
+  async function getRuntimeSafeConfig(guild) {
+    let failedClosed = false;
+    const config = await configStore.withGuildConfigLock(guild.id, async (current, dbClient) => {
+      const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+
+      async function isValidRequiredChannel(channelId) {
+        if (!channelId || !botMember) return false;
+        const channel = await guild.channels.fetch(channelId, { force: true }).catch(() => null);
+        if (!channel || channel.type !== ChannelType.GuildText) return false;
+        return channel.permissionsFor(botMember)?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+        ]) === true;
+      }
+
+      const [logValid, reviewValid] = await Promise.all([
+        isValidRequiredChannel(current.logChannelId),
+        isValidRequiredChannel(current.reviewChannelId),
+      ]);
+      if (logValid && reviewValid && current.logChannelId !== current.reviewChannelId) return current;
+
+      failedClosed = true;
+      return configStore.saveSpamCatcherConfig(guild.id, {
+        ...current,
+        requiredChannelsSet: 0,
+        logChannelId: logValid ? current.logChannelId : null,
+        reviewChannelId: reviewValid ? current.reviewChannelId : null,
+        enabled: false,
+        automaticSpamDetectionEnabled: false,
+        aiVisionSpamCheckEnabled: false,
+        autoBanEnabled: false,
+      }, dbClient);
+    });
+
+    if (!failedClosed) return config;
+    invalidateGuildConfigGeneration(guild.id);
+    return null;
   }
 
   async function getLogChannel(guildId) {
@@ -334,30 +384,29 @@ function createSpamCatcherManager({ client, configStore }) {
   });
 
   async function handleImmediateBan(guild, event, options = {}) {
-    const config = await getConfig(event.guildId).catch(() => ({}));
+    const config = options.config || await getRuntimeSafeConfig(guild);
+    if (!config) return event;
     const mode = event.action === 'ban_after_timeout'
       ? 'after_timeout'
       : event.action === 'ban_delayed'
         ? 'delayed'
         : 'immediate';
-    const dmSent = await moderationWorkflow.sendBanDm(event.userId, config);
-
-    let banError = null;
-    await guild.members.ban(event.userId, {
+    const banResult = await moderationWorkflow.executeBan({
+      guild,
+      userId: event.userId,
+      eventId: event.id,
+      config,
       reason: `Spam Catcher ${mode} ban, event ${event.id}`,
-      deleteMessageSeconds: 0,
-    }).catch((error) => {
-      banError = error;
     });
 
-    if (banError) {
-      console.error('Failed Spam Catcher ban:', banError);
+    if (!banResult.banned) {
+      console.error('Failed Spam Catcher ban:', banResult.error);
       const updated = await configStore
         .updateSpamCatcherEventStatus(event.id, 'ban_failed', options.decidedBy)
         .catch(() => ({ ...event, status: 'ban_failed', decidedBy: options.decidedBy || event.decidedBy }));
       await logAction(updated || event, 'Spam Catcher Ban Failed', [
-        `- Reason: \`${banError.message || banError}\``,
-        `- DM before ban: \`${dmSent ? 'sent' : 'failed'}\``,
+        `- Reason: \`${safeError(banResult.error)}\``,
+        `- DM before ban: \`${banResult.dmSent ? 'sent' : 'failed'}\``,
       ]);
       await sendOrUpdateReviewMessage(guild, updated || event).catch(() => null);
       return updated || event;
@@ -371,37 +420,53 @@ function createSpamCatcherManager({ client, configStore }) {
     }));
     await logAction(updated || event, 'Spam Catcher Banned User', [
       `- Mode: \`${mode}\``,
-      `- DM before ban: \`${dmSent ? 'sent' : 'failed'}\``,
+      `- DM before ban: \`${banResult.dmSent ? 'sent' : 'failed'}\``,
     ]);
     await sendOrUpdateReviewMessage(guild, updated || event).catch(() => null);
     return updated || event;
   }
 
-  async function handleTimeout(guild, member, config, event) {
+  async function scheduleTimeoutDependentBan(event, policy, timeoutUntil) {
+    const banAfter = event.action === 'ban_after_timeout'
+      ? timeoutUntil
+      : event.action === 'ban_delayed'
+        ? policy.banAfter
+        : null;
+    if (!banAfter) return event;
+
+    try {
+      const scheduled = await configStore.scheduleSpamCatcherBan(event.id, banAfter);
+      if (scheduled) return scheduled;
+      return await configStore.getSpamCatcherEventById(event.id).catch(() => event) || event;
+    } catch (error) {
+      console.error('Failed to schedule Spam Catcher ban:', error);
+      return event;
+    }
+  }
+
+  async function handleTimeout(guild, member, config, event, policy) {
     const alreadyTimedOutUntil = existingTimeoutUntil(member);
     if (alreadyTimedOutUntil) {
+      const updated = await scheduleTimeoutDependentBan(event, policy, alreadyTimedOutUntil);
       await moderationWorkflow.sendTimeoutDm({ userId: member.id, guildName: guild.name, eventId: event.id, config, alreadyTimedOut: true });
 
-      await logAction(event, 'Spam Catcher User Already Timed Out', [
+      await logAction(updated, 'Spam Catcher User Already Timed Out', [
         `- Existing timeout until: <t:${Math.floor(alreadyTimedOutUntil.getTime() / 1000)}:R>`,
-        event.banAfter
-          ? event.action === 'ban_after_timeout'
-            ? `- Ban after timeout ends: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
-            : `- Ban after appeal window: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
+        updated.banAfter
+          ? updated.action === 'ban_after_timeout'
+            ? `- Ban after timeout ends: <t:${Math.floor(updated.banAfter.getTime() / 1000)}:R>`
+            : `- Ban after appeal window: <t:${Math.floor(updated.banAfter.getTime() / 1000)}:R>`
           : '- Scheduled ban: `off`',
       ]);
-      await sendOrUpdateReviewMessage(guild, event).catch(() => null);
+      await sendOrUpdateReviewMessage(guild, updated).catch(() => null);
       return;
     }
 
-    const configuredTimeoutMs = Number(config.timeoutMinutes) * 60 * 1000;
-    const timeoutMs = Math.min(
-      Number.isFinite(configuredTimeoutMs) ? Math.max(60_000, Math.floor(configuredTimeoutMs)) : 60_000,
-      DISCORD_TIMEOUT_MAX_MS
-    );
     let timeoutError = null;
-    await member.timeout(timeoutMs, `Spam Catcher event ${event.id}`).catch((error) => {
+    let timedOutMember = null;
+    timedOutMember = await member.timeout(policy.timeoutMs, `Spam Catcher event ${event.id}`).catch((error) => {
       timeoutError = error;
+      return null;
     });
 
     if (timeoutError) {
@@ -418,17 +483,19 @@ function createSpamCatcherManager({ client, configStore }) {
       return;
     }
 
+    const timeoutUntil = existingTimeoutUntil(timedOutMember) || existingTimeoutUntil(member);
+    const updated = await scheduleTimeoutDependentBan(event, policy, timeoutUntil);
     await moderationWorkflow.sendTimeoutDm({ userId: member.id, guildName: guild.name, eventId: event.id, config });
 
-    await logAction(event, 'Spam Catcher Timed Out User', [
+    await logAction(updated, 'Spam Catcher Timed Out User', [
       `- Timeout: \`${config.timeoutMinutes} minutes\``,
-      event.banAfter
-        ? event.action === 'ban_after_timeout'
-          ? `- Ban after timeout ends: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
-          : `- Ban after appeal window: <t:${Math.floor(event.banAfter.getTime() / 1000)}:R>`
+      updated.banAfter
+        ? updated.action === 'ban_after_timeout'
+          ? `- Ban after timeout ends: <t:${Math.floor(updated.banAfter.getTime() / 1000)}:R>`
+          : `- Ban after appeal window: <t:${Math.floor(updated.banAfter.getTime() / 1000)}:R>`
         : '- Scheduled ban: `off`',
     ]);
-    await sendOrUpdateReviewMessage(guild, event).catch(() => null);
+    await sendOrUpdateReviewMessage(guild, updated).catch(() => null);
   }
 
   async function notifyTimeoutRemoved(guild, event) {
@@ -439,57 +506,54 @@ function createSpamCatcherManager({ client, configStore }) {
   async function handleQueuedMessage(message) {
     if (!message.guild || !message.member || message.author?.bot || message.webhookId) return;
     if (!isGuildAllowed(message.guild.id)) return;
+    const configGeneration = configGenerationByGuild.get(message.guild.id) || 0;
     const config = await getConfig(message.guild.id).catch((error) => {
       console.error('Failed to load Spam Catcher config:', error);
       return null;
     });
     if (!config?.enabled || !config.channelIds.includes(message.channelId)) return;
     if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+    if ((configGenerationByGuild.get(message.guild.id) || 0) !== configGeneration) return;
 
-    const action = config.autoBanEnabled && config.banMode === 'immediate'
-      ? 'ban_immediate'
-      : config.autoBanEnabled && config.banMode === 'after_timeout'
-        ? 'ban_after_timeout'
-        : config.autoBanEnabled
-          ? 'ban_delayed'
-          : 'timeout';
-    const now = Date.now();
-    const timeoutUntil = action === 'ban_immediate'
-      ? null
-      : new Date(now + config.timeoutMinutes * 60 * 1000);
-    const banAfter = action === 'ban_delayed'
-      ? new Date(now + config.banDelayMinutes * 60 * 1000)
-      : action === 'ban_after_timeout'
-        ? timeoutUntil
-      : null;
+    const currentConfig = await getRuntimeSafeConfig(message.guild);
+    if (!currentConfig?.enabled || !currentConfig.channelIds.includes(message.channelId)) return;
+    if ((configGenerationByGuild.get(message.guild.id) || 0) !== configGeneration) return;
+    const policy = planModerationPolicy({
+      config: currentConfig,
+      timeoutMinutes: currentConfig.timeoutMinutes,
+    });
+    const action = policy.moderationAction;
     const event = await configStore.createSpamCatcherEvent({
       guildId: message.guild.id,
       userId: message.author.id,
       channelId: message.channelId,
       messageId: message.id,
       action,
-      status: action === 'ban_delayed' || action === 'ban_after_timeout' ? 'ban_pending' : action === 'timeout' ? 'timed_out' : 'caught',
-      timeoutUntil,
-      banAfter,
-      reviewChannelId: config.reviewChannelId,
+      status: action === 'ban_immediate' ? 'ban_pending' : 'timed_out',
+      timeoutUntil: policy.timeoutUntil,
+      banAfter: action === 'ban_immediate' ? policy.banAfter : null,
+      reviewChannelId: currentConfig.reviewChannelId,
     });
 
     if (!event) return;
-    await refreshTrapNoticeCount(message.guild, config, event);
+    await refreshTrapNoticeCount(message.guild, currentConfig, event);
     if (action === 'ban_immediate') {
-      await handleImmediateBan(message.guild, event);
+      await handleImmediateBan(message.guild, event, { config: currentConfig });
       return;
     }
 
-    await handleTimeout(message.guild, message.member, config, event);
+    await handleTimeout(message.guild, message.member, currentConfig, event, policy);
   }
 
   async function handleMessage(message) {
     if (!message.guild || !message.author) return;
-    return runUserStateReset(
+    return runGuildConfigOperation(
       message.guild.id,
-      message.author.id,
-      () => handleQueuedMessage(message)
+      () => runUserStateReset(
+        message.guild.id,
+        message.author.id,
+        () => handleQueuedMessage(message)
+      )
     );
   }
 
@@ -670,14 +734,17 @@ function createSpamCatcherManager({ client, configStore }) {
       const events = await configStore.getDueSpamCatcherBanEvents(25).catch(() => []);
       for (const event of events) {
         if (!isGuildAllowed(event.guildId)) continue;
-        await runUserStateReset(event.guildId, event.userId, async () => {
-          const currentEvent = await configStore.getSpamCatcherEventById(event.id).catch(() => null);
-          if (!currentEvent || currentEvent.status !== 'ban_pending') return;
-          const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
-          if (!guild) return;
-          await handleImmediateBan(guild, currentEvent);
-        });
+        await runGuildConfigOperation(event.guildId, () => (
+          runUserStateReset(event.guildId, event.userId, async () => {
+            const currentEvent = await configStore.getSpamCatcherEventById(event.id).catch(() => null);
+            if (!currentEvent || currentEvent.status !== 'ban_pending') return;
+            const guild = client.guilds.cache.get(event.guildId) || await client.guilds.fetch(event.guildId).catch(() => null);
+            if (!guild) return;
+            await handleImmediateBan(guild, currentEvent);
+          })
+        ));
       }
+      await runAutomaticScheduledBansOnce();
     } finally {
       delayedBanRunning = false;
     }
@@ -685,9 +752,9 @@ function createSpamCatcherManager({ client, configStore }) {
 
   function startLoop() {
     if (banInterval) return;
-    runDelayedBansOnce().catch((error) => console.error('Failed initial Spam Catcher delayed-ban pass:', error));
+    runDelayedBansOnce().catch((error) => console.error('Failed initial scheduled moderation pass:', error));
     banInterval = setInterval(() => {
-      runDelayedBansOnce().catch((error) => console.error('Failed Spam Catcher delayed-ban pass:', error));
+      runDelayedBansOnce().catch((error) => console.error('Failed scheduled moderation pass:', error));
     }, DELAYED_BAN_INTERVAL_MS);
   }
 
@@ -701,12 +768,25 @@ function createSpamCatcherManager({ client, configStore }) {
     configCache.delete(guildId);
   }
 
+  async function resetGuildRuntimeState(guildId) {
+    invalidateGuildConfigGeneration(guildId);
+    const prefix = `${guildId}:`;
+    const operations = [];
+    for (const [key, operation] of userOperationByKey.entries()) {
+      if (!key.startsWith(prefix)) continue;
+      operations.push(operation);
+      userOperationByKey.delete(key);
+    }
+    await Promise.allSettled(operations);
+  }
+
   return {
     handleMessage,
     handleInteraction,
     startLoop,
     stopLoop,
     invalidateGuildConfig,
+    resetGuildRuntimeState,
     runUserStateReset,
   };
 }

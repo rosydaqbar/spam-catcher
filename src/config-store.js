@@ -243,6 +243,7 @@ const DEFAULT_AI_VISION_TRIGGER_WORDS = [
 
 const DEFAULT_SPAM_CATCHER_CONFIG = {
   enabled: false,
+  requiredChannelsSet: 0,
   channelIds: [],
   logChannelId: null,
   timeoutMinutes: 60,
@@ -383,6 +384,10 @@ function normalizeSpamCatcherConfig(value) {
 
   return {
     enabled: source.enabled === true,
+    requiredChannelsSet: !Object.prototype.hasOwnProperty.call(source, 'requiredChannelsSet')
+      || source.requiredChannelsSet === null
+      ? null
+      : source.requiredChannelsSet === true || source.requiredChannelsSet === 1 ? 1 : 0,
     channelIds: Array.isArray(source.channelIds)
       ? [...new Set(source.channelIds
         .filter((id) => typeof id === 'string')
@@ -578,6 +583,10 @@ async function ensureAutomaticSpamDetectionTables() {
         timeout_until TIMESTAMPTZ,
         timeout_status TEXT NOT NULL DEFAULT 'pending',
         timeout_error TEXT,
+        moderation_action TEXT NOT NULL DEFAULT 'timeout',
+        ban_status TEXT NOT NULL DEFAULT 'none',
+        ban_after TIMESTAMPTZ,
+        banned_at TIMESTAMPTZ,
         status TEXT NOT NULL DEFAULT 'danger',
         window_claimed BOOLEAN NOT NULL DEFAULT FALSE,
         danger_confirmed_at TIMESTAMPTZ,
@@ -666,6 +675,34 @@ async function ensureAutomaticSpamDetectionTables() {
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS evidence_deleted_at TIMESTAMPTZ'
   );
   await query(
+    "ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS moderation_action TEXT NOT NULL DEFAULT 'timeout'"
+  );
+  await query(
+    "ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ban_status TEXT NOT NULL DEFAULT 'none'"
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS ban_after TIMESTAMPTZ'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ'
+  );
+  await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET ban_status = CASE
+            WHEN status = 'banned' THEN 'banned'
+            WHEN status = 'ban_failed' THEN 'failed'
+            ELSE ban_status
+          END,
+          banned_at = CASE
+            WHEN status = 'banned' THEN COALESCE(banned_at, updated_at)
+            ELSE banned_at
+          END
+      WHERE ban_status = 'none'
+        AND status IN ('banned', 'ban_failed')
+    `
+  );
+  await query(
     `
       CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_window
       ON automatic_spam_detection_events(guild_id, user_id, window_expires_at DESC)
@@ -745,6 +782,9 @@ async function ensureAutomaticSpamDetectionTables() {
   );
   await query(
     'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message ON automatic_spam_detection_events(review_channel_id, review_message_id)'
+  );
+  await query(
+    'CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_ban_due ON automatic_spam_detection_events(ban_status, ban_after)'
   );
   await query(
     `
@@ -872,6 +912,10 @@ function mapAutomaticSpamDetectionEvent(row) {
     timeoutUntil: row.timeout_until ? new Date(row.timeout_until) : null,
     timeoutStatus: row.timeout_status || 'pending',
     timeoutError: row.timeout_error || null,
+    moderationAction: row.moderation_action || 'timeout',
+    banStatus: row.ban_status || 'none',
+    banAfter: row.ban_after ? new Date(row.ban_after) : null,
+    bannedAt: row.banned_at ? new Date(row.banned_at) : null,
     status: row.status || 'danger',
     windowClaimed: row.window_claimed === true,
     dangerConfirmedAt: row.danger_confirmed_at ? new Date(row.danger_confirmed_at) : null,
@@ -1000,10 +1044,10 @@ async function withAutomaticSpamDetectionEventLock(eventId, work) {
   }
 }
 
-async function saveSpamCatcherConfig(guildId, config) {
+async function saveSpamCatcherConfig(guildId, config, dbClient = null) {
   await ensureSpamCatcherConfigTable();
   const normalized = normalizeSpamCatcherConfig(config);
-  return withGuildConfigLock(guildId, async (_current, client) => {
+  const save = async (client) => {
     await client.query(
       `
         INSERT INTO spam_catcher_config (guild_id, config_json, updated_at)
@@ -1015,7 +1059,9 @@ async function saveSpamCatcherConfig(guildId, config) {
       [guildId, JSON.stringify(normalized)]
     );
     return normalized;
-  });
+  };
+  if (dbClient) return save(dbClient);
+  return withGuildConfigLock(guildId, async (_current, client) => save(client));
 }
 
 async function setGuildAiVisionDailyLimit(guildId, limit) {
@@ -1107,7 +1153,10 @@ async function updateSpamCatcherEventStatus(id, status, decidedBy = null) {
       UPDATE spam_catcher_events
       SET status = $2,
           decided_by = COALESCE($3, decided_by),
-          ban_after = CASE WHEN $2 = 'banned' THEN NULL ELSE ban_after END,
+          ban_after = CASE
+            WHEN $2 IN ('banned', 'ban_failed', 'timeout_failed', 'timeout_removed', 'admin_reset') THEN NULL
+            ELSE ban_after
+          END,
           updated_at = NOW(),
           banned_at = CASE WHEN $2 = 'banned' THEN NOW() ELSE banned_at END
       WHERE id = $1
@@ -1175,6 +1224,163 @@ async function getDueSpamCatcherBanEvents(limit = 25) {
     [safeLimit]
   );
   return res.rows.map(mapSpamCatcherEvent);
+}
+
+async function scheduleSpamCatcherBan(id, banAfter) {
+  await ensureSpamCatcherEventsTable();
+  const scheduledAt = new Date(banAfter);
+  if (!Number.isFinite(scheduledAt.getTime())) {
+    throw new TypeError('A valid Spam Catcher ban schedule is required.');
+  }
+  const res = await query(
+    `
+      UPDATE spam_catcher_events
+      SET status = 'ban_pending',
+          ban_after = $2,
+          timeout_until = CASE
+            WHEN action = 'ban_after_timeout' THEN $2
+            ELSE timeout_until
+          END,
+          updated_at = NOW()
+      WHERE id = $1
+        AND status = 'timed_out'
+        AND action IN ('ban_delayed', 'ban_after_timeout')
+        AND ban_after IS NULL
+      RETURNING *
+    `,
+    [id, scheduledAt]
+  );
+  return mapSpamCatcherEvent(res.rows[0]);
+}
+
+async function cancelPendingSpamCatcherBans(guildId, dbClient = null) {
+  await ensureSpamCatcherEventsTable();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE spam_catcher_events
+      SET status = 'timed_out',
+          ban_after = NULL,
+          updated_at = NOW()
+      WHERE guild_id = $1
+        AND status = 'ban_pending'
+    `,
+    [guildId]
+  );
+  return res.rowCount;
+}
+
+async function cancelPendingAutomaticSpamDetectionBans(guildId, dbClient = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE automatic_spam_detection_events
+      SET ban_status = 'cancelled',
+          ban_after = NULL,
+          updated_at = NOW()
+      WHERE guild_id = $1
+        AND ban_status = 'pending'
+    `,
+    [guildId]
+  );
+  return res.rowCount;
+}
+
+async function resetSpamCatcherSetup(guildId) {
+  await ensureSpamCatcherConfigTable();
+  await ensureSpamCatcherEventsTable();
+  await ensureAutomaticSpamDetectionTables();
+  const config = normalizeSpamCatcherConfig(DEFAULT_SPAM_CATCHER_CONFIG);
+
+  return runTransactionWithRetry('Spam Catcher setup reset', async (client) => {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`guild-config:${guildId}`]
+    );
+    await client.query(
+      `
+        INSERT INTO spam_catcher_config (guild_id, config_json, updated_at)
+        VALUES ($1, $2::jsonb, NOW())
+        ON CONFLICT(guild_id) DO UPDATE SET
+          config_json = EXCLUDED.config_json,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [guildId, JSON.stringify(config)]
+    );
+    await client.query(
+      `
+        UPDATE automatic_spam_detection_users
+        SET spammer = 0,
+            last_alert_at = NULL,
+            last_alert_window_expires_at = NULL,
+            last_alert_protected = FALSE,
+            last_channel_id = NULL,
+            last_message_id = NULL,
+            updated_at = NOW()
+        WHERE guild_id = $1
+      `,
+      [guildId]
+    );
+    await client.query(
+      `
+        UPDATE automatic_spam_detection_ai_usage_reservations AS reservation
+        SET closed_by_reset = TRUE,
+            updated_at = NOW()
+        WHERE reservation.guild_id = $1
+          AND reservation.closed_by_reset = FALSE
+          AND EXISTS (
+            SELECT 1
+            FROM automatic_spam_detection_events AS event
+            WHERE event.id = reservation.event_id
+              AND event.guild_id = $1
+              AND event.ai_vision_status = 'pending'
+          )
+      `,
+      [guildId]
+    );
+    await client.query(
+      `
+        UPDATE automatic_spam_detection_events
+        SET status = CASE
+              WHEN status = 'evaluating' THEN 'ai_analysis_failed'
+              ELSE status
+            END,
+            window_expires_at = CASE
+              WHEN window_expires_at >= NOW() OR status = 'evaluating'
+                THEN LEAST(window_expires_at, NOW() - INTERVAL '1 millisecond')
+              ELSE window_expires_at
+            END,
+            ai_vision_status = CASE
+              WHEN ai_vision_status = 'pending' THEN 'failed'
+              ELSE ai_vision_status
+            END,
+            ai_vision_error = CASE
+              WHEN ai_vision_status = 'pending' THEN 'AI Verdict cancelled by setup reset.'
+              ELSE ai_vision_error
+            END,
+            ai_vision_checked_at = CASE
+              WHEN ai_vision_status = 'pending' THEN NOW()
+              ELSE ai_vision_checked_at
+            END,
+            updated_at = NOW()
+        WHERE guild_id = $1
+          AND (
+            window_expires_at >= NOW()
+            OR status = 'evaluating'
+            OR ai_vision_status = 'pending'
+          )
+      `,
+      [guildId]
+    );
+    const automaticBanCancellationCount = await cancelPendingAutomaticSpamDetectionBans(guildId, client);
+    const spamCatcherBanCancellationCount = await cancelPendingSpamCatcherBans(guildId, client);
+    return {
+      config,
+      automaticBanCancellationCount,
+      spamCatcherBanCancellationCount,
+    };
+  });
 }
 
 async function getSpamCatcherEventsByUser(guildId, userId, limit = 5) {
@@ -1336,6 +1542,10 @@ async function confirmAutomaticSpamDetectionDanger({
   dangerAt,
   aiVisionStatus,
   aiVisionModel,
+  moderationAction = 'timeout',
+  banStatus = 'none',
+  banAfter = null,
+  bannedAt = null,
 }) {
   await ensureAutomaticSpamDetectionTables();
   return runTransactionWithRetry('Automatic Spam Detection danger confirmation', async (client) => {
@@ -1355,11 +1565,26 @@ async function confirmAutomaticSpamDetectionDanger({
               danger_confirmed_at = $4,
               ai_vision_status = $5,
               ai_vision_model = $6,
+              moderation_action = $7,
+              ban_status = $8,
+              ban_after = $9,
+              banned_at = $10,
               updated_at = NOW()
           WHERE id = $1 AND guild_id = $2 AND user_id = $3
           RETURNING *
         `,
-        [eventId, guildId, userId, dangerAt, aiVisionStatus || null, aiVisionModel || null]
+        [
+          eventId,
+          guildId,
+          userId,
+          dangerAt,
+          aiVisionStatus || null,
+          aiVisionModel || null,
+          moderationAction || 'timeout',
+          banStatus || 'none',
+          banAfter || null,
+          bannedAt || null,
+        ]
       );
       eventRow = updatedEvent.rows[0];
       await client.query(
@@ -1426,17 +1651,35 @@ async function claimAutomaticSpamDetectionWindowEvent({
   windowStartedAt,
   windowExpiresAt,
   evidenceMessages = [],
+  moderationAction = 'timeout',
+  banStatus = 'none',
+  banAfter = null,
+  bannedAt = null,
 }) {
   await ensureAutomaticSpamDetectionTables();
+  const references = [...new Map(
+    (Array.isArray(evidenceMessages) ? evidenceMessages : [])
+      .filter((item) => item?.channelId && item?.messageId)
+      .map((item) => [`${item.channelId}:${item.messageId}`, item])
+  ).values()];
+  const initialAttachmentCount = references.reduce(
+    (total, reference) => total + Math.max(0, Number(reference.attachmentCount) || 0),
+    0
+  );
   return runTransactionWithRetry('Automatic Spam Detection event claim', async (client) => {
     const res = await client.query(
       `
         INSERT INTO automatic_spam_detection_events (
           guild_id, user_id, source_channel_id, source_message_id,
           attachment_count, reason, channels_json, window_started_at,
-          window_expires_at, status, window_claimed, updated_at
+          window_expires_at, moderation_action, ban_status, ban_after,
+          banned_at, status, window_claimed, followup_message_count,
+          followup_attachment_count, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, 'evaluating', TRUE, NOW())
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9,
+          $10, $11, $12, $13, 'evaluating', TRUE, $14, $15, NOW()
+        )
         ON CONFLICT (guild_id, user_id, window_started_at) WHERE window_claimed = TRUE
         DO NOTHING
         RETURNING *
@@ -1451,14 +1694,15 @@ async function claimAutomaticSpamDetectionWindowEvent({
         JSON.stringify(Array.isArray(channels) ? channels : []),
         windowStartedAt,
         windowExpiresAt,
+        moderationAction || 'timeout',
+        banStatus || 'none',
+        banAfter || null,
+        bannedAt || null,
+        references.length,
+        initialAttachmentCount,
       ]
     );
     if (res.rows[0]) {
-      const references = [...new Map(
-        (Array.isArray(evidenceMessages) ? evidenceMessages : [])
-          .filter((item) => item?.channelId && item?.messageId)
-          .map((item) => [`${item.channelId}:${item.messageId}`, item])
-      ).values()];
       for (const reference of references) {
         await client.query(
           `
@@ -1551,9 +1795,10 @@ async function updateAutomaticSpamDetectionAiVisionResult(id, {
   aiVisionMatchedWords,
   aiVisionError,
   aiVisionCheckedAt,
-}) {
+}, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const res = await query(
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
     `
       UPDATE automatic_spam_detection_events
       SET ai_vision_status = $2,
@@ -1609,6 +1854,66 @@ async function updateAutomaticSpamDetectionTimeout(id, { timeoutUntil, timeoutSt
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
 
+async function updateAutomaticSpamDetectionModeration(id, {
+  moderationAction,
+  banStatus,
+  banAfter,
+  bannedAt,
+}) {
+  await ensureAutomaticSpamDetectionTables();
+  const res = await query(
+    `
+      UPDATE automatic_spam_detection_events
+      SET moderation_action = $2,
+          ban_status = $3,
+          ban_after = $4,
+          banned_at = CASE
+            WHEN $5::timestamptz IS NOT NULL THEN $5
+            WHEN $3 = 'banned' THEN COALESCE(banned_at, NOW())
+            ELSE banned_at
+          END,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, moderationAction || 'timeout', banStatus || 'none', banAfter || null, bannedAt || null]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function getDueAutomaticSpamDetectionBanEvents(limit = 25) {
+  await ensureAutomaticSpamDetectionTables();
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  const res = await query(
+    `
+      SELECT * FROM automatic_spam_detection_events
+      WHERE ban_status = 'pending'
+        AND ban_after IS NOT NULL
+        AND ban_after <= NOW()
+      ORDER BY ban_after ASC
+      LIMIT $1
+    `,
+    [safeLimit]
+  );
+  return res.rows.map(mapAutomaticSpamDetectionEvent);
+}
+
+async function getPendingAutomaticSpamDetectionAiEvents(limit = 25) {
+  await ensureAutomaticSpamDetectionTables();
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 25)));
+  const res = await query(
+    `
+      SELECT * FROM automatic_spam_detection_events
+      WHERE status = 'evaluating'
+         OR (status = 'danger' AND ai_vision_status = 'pending')
+      ORDER BY created_at ASC
+      LIMIT $1
+    `,
+    [safeLimit]
+  );
+  return res.rows.map(mapAutomaticSpamDetectionEvent);
+}
+
 async function updateAutomaticSpamDetectionReviewMessage(id, reviewChannelId, reviewMessageId) {
   await ensureAutomaticSpamDetectionTables();
   const res = await query(
@@ -1647,6 +1952,51 @@ async function updateAutomaticSpamDetectionDecision(
       RETURNING *
     `,
     [id, status, decidedBy || null, decisionError || null, expectedStatus]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function updateAutomaticSpamDetectionDecisionAndModeration(id, {
+  status,
+  decidedBy,
+  decisionError = null,
+  moderationAction,
+  banStatus,
+  banAfter = null,
+  bannedAt = null,
+}, dbClient = null, expectedStatus = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE automatic_spam_detection_events
+      SET status = $2,
+          decided_by = $3,
+          decision_error = $4,
+          moderation_action = $5,
+          ban_status = $6,
+          ban_after = $7,
+          banned_at = CASE
+            WHEN $8::timestamptz IS NOT NULL THEN $8
+            WHEN $6 = 'banned' THEN COALESCE(banned_at, NOW())
+            ELSE banned_at
+          END,
+          updated_at = NOW()
+      WHERE id = $1
+        AND ($9::text IS NULL OR status = $9)
+      RETURNING *
+    `,
+    [
+      id,
+      status,
+      decidedBy || null,
+      decisionError || null,
+      moderationAction || 'timeout',
+      banStatus || 'none',
+      banAfter || null,
+      bannedAt || null,
+      expectedStatus,
+    ]
   );
   return mapAutomaticSpamDetectionEvent(res.rows[0]);
 }
@@ -2191,6 +2541,8 @@ async function resetUserDatabaseState(guildId, userId, scope, decidedBy) {
               WHEN ai_vision_status = 'pending' THEN NOW()
               ELSE ai_vision_checked_at
             END,
+            ban_status = 'cancelled',
+            ban_after = NULL,
             decided_by = $3,
             decision_error = 'Database state reset by Super Admin.',
             updated_at = NOW()
@@ -2314,6 +2666,10 @@ module.exports = {
   updateSpamCatcherReviewMessage,
   resolveSpamCatcherAppeal,
   getDueSpamCatcherBanEvents,
+  scheduleSpamCatcherBan,
+  cancelPendingSpamCatcherBans,
+  cancelPendingAutomaticSpamDetectionBans,
+  resetSpamCatcherSetup,
   getSpamCatcherEventsByUser,
   getSpamCatcherCaughtCount,
   getSpamCatcherNoticeMessage,
@@ -2335,8 +2691,12 @@ module.exports = {
   getLatestOpenAutomaticSpamDetectionDangerEvent,
   getAutomaticSpamDetectionEventsByUser,
   updateAutomaticSpamDetectionTimeout,
+  updateAutomaticSpamDetectionModeration,
+  getDueAutomaticSpamDetectionBanEvents,
+  getPendingAutomaticSpamDetectionAiEvents,
   updateAutomaticSpamDetectionReviewMessage,
   updateAutomaticSpamDetectionDecision,
+  updateAutomaticSpamDetectionDecisionAndModeration,
   resolveAutomaticSpamDetectionEventAndCloseWindow,
   markAutomaticSpamDetectionAppealed,
   reserveAiVisionDailyUsageForEvent,

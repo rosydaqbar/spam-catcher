@@ -15,6 +15,47 @@ const { createTranslator } = require('./i18n');
 
 const APPEAL_PREFIX = 'moderation_appeal';
 const APPEAL_MODAL_PREFIX = 'moderation_appeal_modal';
+const DISCORD_TIMEOUT_MAX_MS = (28 * 24 * 60 * 60 * 1000) - 60_000;
+
+function moderationActionForConfig(config = {}) {
+  if (!config.autoBanEnabled) return 'timeout';
+  if (config.banMode === 'immediate') return 'ban_immediate';
+  if (config.banMode === 'after_timeout') return 'ban_after_timeout';
+  return 'ban_delayed';
+}
+
+function planModerationPolicy({ config = {}, timeoutMinutes, now = new Date() }) {
+  const moderationAction = moderationActionForConfig(config);
+  const plannedAt = new Date(now);
+  const nowMs = Number.isFinite(plannedAt.getTime()) ? plannedAt.getTime() : Date.now();
+  const configuredTimeoutMs = Number(timeoutMinutes) * 60 * 1000;
+  const timeoutMs = moderationAction === 'ban_immediate'
+    ? null
+    : Math.min(
+      Number.isFinite(configuredTimeoutMs) ? Math.max(60_000, Math.floor(configuredTimeoutMs)) : 60_000,
+      DISCORD_TIMEOUT_MAX_MS
+    );
+  const timeoutUntil = timeoutMs === null ? null : new Date(nowMs + timeoutMs);
+  const configuredDelayMs = Number(config.banDelayMinutes) * 60 * 1000;
+  const delayMs = Number.isFinite(configuredDelayMs)
+    ? Math.max(60_000, Math.floor(configuredDelayMs))
+    : 60_000;
+  const banAfter = moderationAction === 'ban_delayed'
+    ? new Date(nowMs + delayMs)
+    : moderationAction === 'ban_after_timeout'
+      ? timeoutUntil
+      : moderationAction === 'ban_immediate'
+        ? new Date(nowMs + 60_000)
+        : null;
+
+  return {
+    moderationAction,
+    timeoutMs,
+    timeoutUntil,
+    banStatus: moderationAction === 'timeout' ? 'none' : 'pending',
+    banAfter,
+  };
+}
 
 function createModerationWorkflow({
   client,
@@ -145,6 +186,29 @@ function createModerationWorkflow({
     }));
   }
 
+  async function executeBan({ guild, userId, eventId, config = {}, reason }) {
+    const dmSent = await sendBanDm(userId, config);
+    try {
+      await guild.members.ban(userId, {
+        reason: reason || `Spam Catcher event ${eventId}`,
+        deleteMessageSeconds: 0,
+      });
+      return {
+        banned: true,
+        bannedAt: new Date(),
+        dmSent,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        banned: false,
+        bannedAt: null,
+        dmSent,
+        error,
+      };
+    }
+  }
+
   async function handleAppealButton(interaction) {
     const [, customSource, eventIdRaw] = interaction.customId.split(':');
     if (customSource !== source) return false;
@@ -220,6 +284,7 @@ function createModerationWorkflow({
   return {
     appealButton,
     dmUser,
+    executeBan,
     handleInteraction,
     ownsAppealInteraction,
     sendBanDm,
@@ -228,4 +293,4 @@ function createModerationWorkflow({
   };
 }
 
-module.exports = { createModerationWorkflow };
+module.exports = { createModerationWorkflow, planModerationPolicy };

@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   timeout_until TIMESTAMPTZ,
   timeout_status TEXT NOT NULL DEFAULT 'pending',
   timeout_error TEXT,
+  moderation_action TEXT NOT NULL DEFAULT 'timeout',
+  ban_status TEXT NOT NULL DEFAULT 'none',
+  ban_after TIMESTAMPTZ,
+  banned_at TIMESTAMPTZ,
   status TEXT NOT NULL DEFAULT 'danger',
   window_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   danger_confirmed_at TIMESTAMPTZ,
@@ -119,6 +123,31 @@ ALTER TABLE automatic_spam_detection_events
 
 ALTER TABLE automatic_spam_detection_events
   ADD COLUMN IF NOT EXISTS evidence_deleted_at TIMESTAMPTZ;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS moderation_action TEXT NOT NULL DEFAULT 'timeout';
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS ban_status TEXT NOT NULL DEFAULT 'none';
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS ban_after TIMESTAMPTZ;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ;
+
+UPDATE automatic_spam_detection_events
+SET ban_status = CASE
+      WHEN status = 'banned' THEN 'banned'
+      WHEN status = 'ban_failed' THEN 'failed'
+      ELSE ban_status
+    END,
+    banned_at = CASE
+      WHEN status = 'banned' THEN COALESCE(banned_at, updated_at)
+      ELSE banned_at
+    END
+WHERE ban_status = 'none'
+  AND status IN ('banned', 'ban_failed');
 
 ALTER TABLE automatic_spam_detection_ai_usage_reservations
   ADD COLUMN IF NOT EXISTS closed_by_reset BOOLEAN NOT NULL DEFAULT FALSE;
@@ -179,6 +208,9 @@ CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_user_created
 
 CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_review_message
   ON automatic_spam_detection_events(review_channel_id, review_message_id);
+
+CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_events_ban_due
+  ON automatic_spam_detection_events(ban_status, ban_after);
 
 CREATE INDEX IF NOT EXISTS idx_automatic_spam_detection_evidence_messages_event
   ON automatic_spam_detection_evidence_messages(event_id, created_at ASC);

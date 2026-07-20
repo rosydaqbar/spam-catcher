@@ -1046,8 +1046,8 @@ async function withAutomaticSpamDetectionEventLock(eventId, work) {
 
 async function saveSpamCatcherConfig(guildId, config, dbClient = null) {
   await ensureSpamCatcherConfigTable();
-  const normalized = normalizeSpamCatcherConfig(config);
-  const save = async (client) => {
+  const save = async (client, configToSave) => {
+    const normalized = normalizeSpamCatcherConfig(configToSave);
     await client.query(
       `
         INSERT INTO spam_catcher_config (guild_id, config_json, updated_at)
@@ -1060,8 +1060,11 @@ async function saveSpamCatcherConfig(guildId, config, dbClient = null) {
     );
     return normalized;
   };
-  if (dbClient) return save(dbClient);
-  return withGuildConfigLock(guildId, async (_current, client) => save(client));
+  if (dbClient) return save(dbClient, config);
+  return withGuildConfigLock(guildId, async (current, client) => {
+    const merged = { ...current, ...config };
+    return save(client, merged);
+  });
 }
 
 async function setGuildAiVisionDailyLimit(guildId, limit) {
@@ -1734,57 +1737,6 @@ async function claimAutomaticSpamDetectionWindowEvent({
   });
 }
 
-async function finalizeAutomaticSpamDetectionWindowEvent(id, {
-  status,
-  dangerConfirmedAt,
-  aiVisionStatus,
-  aiVisionModel,
-  aiVisionImageUrl,
-  aiVisionConfidence,
-  aiVisionCaption,
-  aiVisionOcrText,
-  aiVisionMatchedWords,
-  aiVisionError,
-  aiVisionCheckedAt,
-}) {
-  await ensureAutomaticSpamDetectionTables();
-  const res = await query(
-    `
-      UPDATE automatic_spam_detection_events
-      SET status = $2,
-          danger_confirmed_at = $3,
-          ai_vision_status = $4,
-          ai_vision_model = $5,
-          ai_vision_image_url = $6,
-          ai_vision_confidence = $7,
-          ai_vision_caption = $8,
-          ai_vision_ocr_text = $9,
-          ai_vision_matched_words_json = $10::jsonb,
-          ai_vision_error = $11,
-          ai_vision_checked_at = $12,
-          updated_at = NOW()
-      WHERE id = $1
-        AND window_claimed = TRUE
-      RETURNING *
-    `,
-    [
-      id,
-      status,
-      dangerConfirmedAt || null,
-      aiVisionStatus || null,
-      aiVisionModel || null,
-      aiVisionImageUrl || null,
-      aiVisionConfidence === null || aiVisionConfidence === undefined ? null : Number(aiVisionConfidence),
-      aiVisionCaption || null,
-      aiVisionOcrText || null,
-      JSON.stringify(Array.isArray(aiVisionMatchedWords) ? aiVisionMatchedWords : []),
-      aiVisionError || null,
-      aiVisionCheckedAt || null,
-    ]
-  );
-  return mapAutomaticSpamDetectionEvent(res.rows[0]);
-}
-
 async function updateAutomaticSpamDetectionAiVisionResult(id, {
   aiVisionStatus,
   aiVisionModel,
@@ -1797,7 +1749,15 @@ async function updateAutomaticSpamDetectionAiVisionResult(id, {
   aiVisionCheckedAt,
 }, dbClient = null) {
   await ensureAutomaticSpamDetectionTables();
-  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  if (!dbClient) {
+    return withAutomaticSpamDetectionEventLock(id, (client) =>
+      updateAutomaticSpamDetectionAiVisionResult(id, {
+        aiVisionStatus, aiVisionModel, aiVisionImageUrl, aiVisionConfidence,
+        aiVisionCaption, aiVisionOcrText, aiVisionMatchedWords, aiVisionError, aiVisionCheckedAt,
+      }, client)
+    );
+  }
+  const execute = dbClient.query.bind(dbClient);
   const res = await execute(
     `
       UPDATE automatic_spam_detection_events
@@ -2680,7 +2640,6 @@ module.exports = {
   resetAutomaticSpamDetectionSpammer,
   getAutomaticSpamDetectionUser,
   claimAutomaticSpamDetectionWindowEvent,
-  finalizeAutomaticSpamDetectionWindowEvent,
   updateAutomaticSpamDetectionAiVisionResult,
   getAutomaticSpamDetectionWindowEventForMessage,
   appendAutomaticSpamDetectionWindowFollowup,

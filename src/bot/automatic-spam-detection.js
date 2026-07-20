@@ -64,6 +64,14 @@ function createAutomaticSpamDetectionManager({
   const eventMessageQueueByEvent = new Map();
   const eventMessageUpdateTimerByEvent = new Map();
   const automaticAuditQueueByGuild = new Map();
+  const activeFlowLogs = new Map();
+  const flowLogQueueByGuild = new Map();
+  const activeTimeoutRemovalLogs = new Map();
+  const timeoutRemovalLogQueueByGuild = new Map();
+  const activeBanActionLogs = new Map();
+  const banActionLogQueueByGuild = new Map();
+  const activeEvidenceDeletionLogs = new Map();
+  const evidenceDeletionLogQueueByGuild = new Map();
   let scheduledBanRunning = false;
   const logger = createLogger('automatic-spam-detection');
   const visionChecker = createAiVisionChecker({
@@ -694,6 +702,113 @@ function createAutomaticSpamDetectionManager({
     };
   }
 
+  function buildFlowLogPayload(event, config) {
+    const t = createTranslator(config.language);
+    const lines = [];
+    const steps = [];
+    let titleEmoji = '\u{1F504}';
+
+    if (event.banStatus === 'banned') {
+      titleEmoji = BANNED_EMOJI;
+    } else if (event.timeoutStatus || event.status === 'danger_confirmed') {
+      titleEmoji = DANGER_TITLE_EMOJI;
+    }
+    lines.push(`## ${titleEmoji} ${t('automatic.logTitle')}`);
+
+    if (event.userId) {
+      lines.push(`**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`);
+    }
+    if (event.id) {
+      lines.push(`**${t('automatic.eventId')}:** \`${event.id}\``);
+    }
+
+    if (event.sourceChannelId) {
+      const source = auditSourceDetail(event, t);
+      if (source) lines.push(source);
+    }
+    lines.push(auditActivityDetail(event, t));
+
+    if (event.windowStartedAt) {
+      const windowExpiresAt = event.windowExpiresAt || new Date(event.windowStartedAt.getTime() + (config.attachmentSpamWindowSeconds * 1000));
+      lines.push(`**${t('automatic.window')}:** ${timestamp(event.windowStartedAt, 'T')} - ${timestamp(windowExpiresAt, 'T')}`);
+    }
+
+    if (event.timeoutStatus && event.timeoutStatus !== 'none' && event.timeoutStatus !== 'pending') {
+      lines.push(auditTimeoutDetail(event, t));
+    }
+    if (event.banStatus && event.banStatus !== 'none') {
+      lines.push(auditBanDetail(event, t));
+    }
+    if (event.aiVisionStatus && event.aiVisionStatus !== 'pending') {
+      lines.push(auditAiDetail(event, t));
+    }
+
+    lines.push('');
+    lines.push('### ' + t('automatic.logProgress'));
+
+    const stepNumber = { current: 1 };
+
+    function doneStep(text) {
+      steps.push(stepNumber.current + '. ' + text);
+      stepNumber.current++;
+    }
+
+    doneStep(t('automatic.logAlertStarted'));
+
+    const dangerDone = event.dangerConfirmedAt || event.timeoutStatus || event.banStatus || event.aiVisionStatus;
+    if (dangerDone) {
+      doneStep(t('automatic.logDangerConfirmed'));
+    }
+
+    if (event.timeoutStatus) {
+      if (event.timeoutStatus === 'applied') {
+        doneStep(t('automatic.logTimeoutApplied'));
+      } else if (event.timeoutStatus === 'already_active') {
+        doneStep(t('automatic.logTimeoutAlreadyActive'));
+      } else if (event.timeoutStatus === 'failed') {
+        doneStep(t('automatic.logTimeoutFailed'));
+      } else if (event.timeoutStatus !== 'none') {
+        steps.push(stepNumber.current + '. ' + t('automatic.logTimeoutApplied') + '...');
+        stepNumber.current++;
+      }
+    }
+
+    if (event.banStatus === 'banned') {
+      doneStep(t('automatic.logBanCompleted'));
+    } else if (event.banStatus === 'failed') {
+      doneStep(t('automatic.logBanFailed'));
+    }
+
+    if (event.aiVisionStatus) {
+      if (event.aiVisionStatus === 'pending') {
+        steps.push(stepNumber.current + '. ' + t('automatic.logAiStarted') + '...');
+        stepNumber.current++;
+      } else {
+        const aiStep = aiAuditAction(t, event.aiVisionStatus);
+        const confidence = event.aiVisionConfidence !== null && event.aiVisionConfidence !== undefined
+          ? ' \u00B7 ' + Math.round(event.aiVisionConfidence * 100) + '%'
+          : '';
+        doneStep(aiStep + confidence);
+      }
+    }
+
+    lines.push(...steps.map((s) => '- ' + s));
+    lines.push('');
+    lines.push(`-# \u{1F552} ${timestamp(new Date(), 'F')}`);
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(0x64748b)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(lines.filter(Boolean).join('\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
   function auditSourceDetail(event, t) {
     if (!event.sourceChannelId || !event.sourceMessageId) return null;
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
@@ -759,6 +874,396 @@ function createAutomaticSpamDetectionManager({
         eventId: event?.id || null,
         error: safeError(error),
       });
+    });
+  }
+
+  async function sendOrEditFlowLogInner(guild, config, event) {
+    const mapKey = `${guild.id}:${event.userId}`;
+    const existing = activeFlowLogs.get(mapKey);
+    let targetChannel;
+    let targetMessage;
+
+    if (existing) {
+      targetChannel = await getConfiguredTextChannel(guild, existing.channelId);
+      if (targetChannel) {
+        targetMessage = await targetChannel.messages.fetch(existing.messageId).catch(() => null);
+      }
+    }
+
+    if (targetMessage) {
+      try {
+        await targetMessage.edit(buildFlowLogPayload(event, config));
+        return;
+      } catch {
+        activeFlowLogs.delete(mapKey);
+      }
+    }
+
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) return;
+    const message = await logChannel.send(buildFlowLogPayload(event, config)).catch((error) => {
+      logger.error('Failed to send Automatic Spam Detection flow log', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+      return null;
+    });
+    if (message) {
+      activeFlowLogs.set(mapKey, { channelId: logChannel.id, messageId: message.id });
+    }
+  }
+
+  function queueFlowLogEdit(guild, config, event) {
+    if (!event?.userId || !guild) return;
+    const previous = flowLogQueueByGuild.get(guild.id) || Promise.resolve();
+    const current = previous.catch(() => null).then(() =>
+      sendOrEditFlowLogInner(guild, config, event)
+    );
+    flowLogQueueByGuild.set(guild.id, current);
+    current.catch((error) => {
+      logger.error('Automatic Spam Detection flow log queue failed', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+    }).finally(() => {
+      if (flowLogQueueByGuild.get(guild.id) === current) {
+        flowLogQueueByGuild.delete(guild.id);
+      }
+    });
+  }
+
+  function buildTimeoutRemovalPayload(event, config, actorId) {
+    const t = createTranslator(config.language);
+    const lines = [`## ${t('automatic.timeoutRemovalTitle')}`];
+    if (event.userId) {
+      lines.push(`**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`);
+    }
+    if (actorId) {
+      lines.push(`**${t('automatic.logActor')}:** <@${actorId}> (\`${actorId}\`)`);
+    }
+    if (event.id) {
+      lines.push(`**${t('automatic.eventId')}:** \`${event.id}\``);
+    }
+
+    lines.push('');
+    lines.push('### ' + t('automatic.logProgress'));
+
+    const steps = [];
+    if (event.status === 'timeout_removed' || event.status === 'timeout_remove_failed' || event.status === 'user_unavailable') {
+      steps.push('1. ' + t('automatic.logTimeoutRemovalRequested'));
+      if (event.status === 'timeout_removed') {
+        steps.push('2. ' + t('automatic.logTimeoutRemoved'));
+      } else if (event.status === 'user_unavailable') {
+        steps.push('2. ' + t('automatic.logUserUnavailable'));
+      } else {
+        steps.push('2. ' + t('automatic.logTimeoutRemovalFailed'));
+      }
+    } else {
+      steps.push('1. ' + t('automatic.logTimeoutRemovalRequested'));
+      steps.push('2. ' + t('automatic.logTimeoutRemoved') + '...');
+    }
+
+    if (event.decisionError) {
+      steps.push('');
+      steps.push(`\`${truncateText(event.decisionError, 160)}\``);
+    }
+
+    lines.push(...steps.map((s) => '- ' + s));
+    lines.push('');
+    lines.push(`-# \u{1F552} ${timestamp(new Date(), 'F')}`);
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(event.status === 'timeout_removed' ? 0x22c55e : event.status === 'timeout_remove_failed' ? 0xef4444 : 0x64748b)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(lines.filter(Boolean).join('\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function sendOrEditTimeoutRemovalFlowLogInner(guild, config, event, actorId) {
+    const mapKey = `${guild.id}:${event.id}`;
+    const existing = activeTimeoutRemovalLogs.get(mapKey);
+    let targetChannel;
+    let targetMessage;
+
+    if (existing) {
+      targetChannel = await getConfiguredTextChannel(guild, existing.channelId);
+      if (targetChannel) {
+        targetMessage = await targetChannel.messages.fetch(existing.messageId).catch(() => null);
+      }
+    }
+
+    if (targetMessage) {
+      try {
+        await targetMessage.edit(buildTimeoutRemovalPayload(event, config, actorId));
+        return;
+      } catch {
+        activeTimeoutRemovalLogs.delete(mapKey);
+      }
+    }
+
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) return;
+    const message = await logChannel.send(buildTimeoutRemovalPayload(event, config, actorId)).catch((error) => {
+      logger.error('Failed to send Timeout Removal flow log', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+      return null;
+    });
+    if (message) {
+      activeTimeoutRemovalLogs.set(mapKey, { channelId: logChannel.id, messageId: message.id });
+    }
+  }
+
+  function queueTimeoutRemovalFlowLogEdit(guild, config, event, actorId) {
+    if (!event?.id || !guild) return;
+    const previous = timeoutRemovalLogQueueByGuild.get(guild.id) || Promise.resolve();
+    const current = previous.catch(() => null).then(() =>
+      sendOrEditTimeoutRemovalFlowLogInner(guild, config, event, actorId)
+    );
+    timeoutRemovalLogQueueByGuild.set(guild.id, current);
+    current.catch((error) => {
+      logger.error('Timeout Removal flow log queue failed', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+    }).finally(() => {
+      if (timeoutRemovalLogQueueByGuild.get(guild.id) === current) {
+        timeoutRemovalLogQueueByGuild.delete(guild.id);
+      }
+    });
+  }
+
+  function buildBanActionPayload(event, config, actorId) {
+    const t = createTranslator(config.language);
+    const lines = [`## ${t('automatic.banActionTitle')}`];
+    if (event.userId) {
+      lines.push(`**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`);
+    }
+    if (actorId) {
+      lines.push(`**${t('automatic.logActor')}:** <@${actorId}> (\`${actorId}\`)`);
+    }
+    if (event.id) {
+      lines.push(`**${t('automatic.eventId')}:** \`${event.id}\``);
+    }
+
+    lines.push('');
+    lines.push('### ' + t('automatic.logProgress'));
+
+    const steps = [];
+    if (event.status === 'banned' || event.status === 'ban_failed') {
+      steps.push('1. ' + t('automatic.logBanRequested'));
+      steps.push('2. ' + t('automatic.logBanConfirmed'));
+      steps.push('3. ' + (event.status === 'banned' ? t('automatic.logBanCompleted') : t('automatic.logBanFailed')));
+    } else if (event.banStatus === 'cancelled' || event.status === 'timeout_removed') {
+      steps.push('1. ' + t('automatic.logBanRequested'));
+      steps.push('2. ' + t('automatic.logBanCancelled'));
+    } else if (event.banStatus === 'pending') {
+      steps.push('1. ' + t('automatic.logBanRequested'));
+      steps.push('2. ' + t('automatic.logBanConfirmed'));
+      steps.push('3. ' + t('automatic.logBanFailed') + '...');
+    } else {
+      steps.push('1. ' + t('automatic.logBanRequested'));
+      steps.push('2. ' + t('automatic.logBanConfirmed') + '...');
+    }
+
+    if (event.decisionError) {
+      steps.push('');
+      steps.push(`\`${truncateText(event.decisionError, 160)}\``);
+    }
+
+    lines.push(...steps.map((s) => '- ' + s));
+    lines.push('');
+    lines.push(`-# \u{1F552} ${timestamp(new Date(), 'F')}`);
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(event.status === 'banned' ? 0x7f1d1d : event.status === 'ban_failed' ? 0xef4444 : 0x64748b)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(lines.filter(Boolean).join('\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function sendOrEditBanActionFlowLogInner(guild, config, event, actorId) {
+    const mapKey = `${guild.id}:${event.id}`;
+    const existing = activeBanActionLogs.get(mapKey);
+    let targetChannel;
+    let targetMessage;
+
+    if (existing) {
+      targetChannel = await getConfiguredTextChannel(guild, existing.channelId);
+      if (targetChannel) {
+        targetMessage = await targetChannel.messages.fetch(existing.messageId).catch(() => null);
+      }
+    }
+
+    if (targetMessage) {
+      try {
+        await targetMessage.edit(buildBanActionPayload(event, config, actorId));
+        return;
+      } catch {
+        activeBanActionLogs.delete(mapKey);
+      }
+    }
+
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) return;
+    const message = await logChannel.send(buildBanActionPayload(event, config, actorId)).catch((error) => {
+      logger.error('Failed to send Ban User flow log', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+      return null;
+    });
+    if (message) {
+      activeBanActionLogs.set(mapKey, { channelId: logChannel.id, messageId: message.id });
+    }
+  }
+
+  function queueBanActionFlowLogEdit(guild, config, event, actorId) {
+    if (!event?.id || !guild) return;
+    const previous = banActionLogQueueByGuild.get(guild.id) || Promise.resolve();
+    const current = previous.catch(() => null).then(() =>
+      sendOrEditBanActionFlowLogInner(guild, config, event, actorId)
+    );
+    banActionLogQueueByGuild.set(guild.id, current);
+    current.catch((error) => {
+      logger.error('Ban User flow log queue failed', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+    }).finally(() => {
+      if (banActionLogQueueByGuild.get(guild.id) === current) {
+        banActionLogQueueByGuild.delete(guild.id);
+      }
+    });
+  }
+
+  function buildEvidenceDeletionPayload(event, config, actorId, summary) {
+    const t = createTranslator(config.language);
+    const lines = [`## ${t('automatic.evidenceDeletionTitle')}`];
+    if (event.userId) {
+      lines.push(`**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`);
+    }
+    if (actorId) {
+      lines.push(`**${t('automatic.logActor')}:** <@${actorId}> (\`${actorId}\`)`);
+    }
+    if (event.id) {
+      lines.push(`**${t('automatic.eventId')}:** \`${event.id}\``);
+    }
+
+    lines.push('');
+    lines.push('### ' + t('automatic.logProgress'));
+
+    const steps = [];
+    if (summary) {
+      steps.push('1. ' + t('automatic.logEvidenceDeletionRequested'));
+      if (summary.failed > 0) {
+        steps.push('2. ' + t('automatic.logEvidenceDeletionFailed'));
+      } else {
+        steps.push('2. ' + t('automatic.logEvidenceDeletionCompleted'));
+      }
+      lines.push('');
+      lines.push(`**${t('automatic.logEvidenceDeleted')}:** \`${summary.deleted}\``);
+      lines.push(`**${t('automatic.logEvidenceUnavailable')}:** \`${summary.alreadyDeleted}\``);
+      lines.push(`**${t('automatic.logEvidencePreserved')}:** \`${summary.preserved}\``);
+      lines.push(`**${t('automatic.logEvidenceFailed')}:** \`${summary.failed}\``);
+    } else {
+      steps.push('1. ' + t('automatic.logEvidenceDeletionFailed'));
+      if (event.decisionError) {
+        lines.push('');
+        lines.push(`\`${truncateText(event.decisionError, 160)}\``);
+      }
+    }
+
+    lines.push(...steps.map((s) => '- ' + s));
+    lines.push('');
+    lines.push(`-# \u{1F552} ${timestamp(new Date(), 'F')}`);
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder()
+          .setAccentColor(summary && summary.failed === 0 ? 0x22c55e : 0xef4444)
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(lines.filter(Boolean).join('\n'))
+          ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function sendOrEditEvidenceDeletionFlowLogInner(guild, config, event, actorId, summary) {
+    const mapKey = `${guild.id}:${event.id}`;
+    const existing = activeEvidenceDeletionLogs.get(mapKey);
+    let targetChannel;
+    let targetMessage;
+
+    if (existing) {
+      targetChannel = await getConfiguredTextChannel(guild, existing.channelId);
+      if (targetChannel) {
+        targetMessage = await targetChannel.messages.fetch(existing.messageId).catch(() => null);
+      }
+    }
+
+    if (targetMessage) {
+      try {
+        await targetMessage.edit(buildEvidenceDeletionPayload(event, config, actorId, summary));
+        return;
+      } catch {
+        activeEvidenceDeletionLogs.delete(mapKey);
+      }
+    }
+
+    const logChannel = await getLogChannel(guild, config);
+    if (!logChannel) return;
+    const message = await logChannel.send(buildEvidenceDeletionPayload(event, config, actorId, summary)).catch((error) => {
+      logger.error('Failed to send Evidence Deletion flow log', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+      return null;
+    });
+    if (message) {
+      activeEvidenceDeletionLogs.set(mapKey, { channelId: logChannel.id, messageId: message.id });
+    }
+  }
+
+  function queueEvidenceDeletionFlowLogEdit(guild, config, event, actorId, summary) {
+    if (!event?.id || !guild) return;
+    const previous = evidenceDeletionLogQueueByGuild.get(guild.id) || Promise.resolve();
+    const current = previous.catch(() => null).then(() =>
+      sendOrEditEvidenceDeletionFlowLogInner(guild, config, event, actorId, summary)
+    );
+    evidenceDeletionLogQueueByGuild.set(guild.id, current);
+    current.catch((error) => {
+      logger.error('Evidence Deletion flow log queue failed', {
+        guildId: guild.id,
+        eventId: event?.id || null,
+        error: safeError(error),
+      });
+    }).finally(() => {
+      if (evidenceDeletionLogQueueByGuild.get(guild.id) === current) {
+        evidenceDeletionLogQueueByGuild.delete(guild.id);
+      }
     });
   }
 
@@ -1156,13 +1661,7 @@ function createAutomaticSpamDetectionManager({
       banStatus: 'none',
       aiVisionStatus: null,
     };
-    queueAutomaticAudit(message.guild, config, auditEvent, t('automatic.logAlertStarted'), {
-      details: [
-        auditSourceDetail(auditEvent, t),
-        auditActivityDetail(auditEvent, t),
-        `**${t('automatic.window')}:** ${timestamp(messageAt, 'T')} - ${timestamp(windowExpiresAt, 'T')}`,
-      ],
-    });
+    queueFlowLogEdit(message.guild, config, auditEvent);
   }
 
   async function claimDetectionEvent({ message, danger, evidenceMessages }) {
@@ -1206,20 +1705,12 @@ function createAutomaticSpamDetectionManager({
     let userState = confirmed.user;
     const t = createTranslator(config.language);
 
-    queueAutomaticAudit(message.guild, config, updatedEvent, t('automatic.logDangerConfirmed'), {
-      details: [
-        updatedEvent.reason ? `**${t('automatic.reason')}:** \`${reasonText(updatedEvent.reason, t)}\`` : null,
-        auditSourceDetail(updatedEvent, t),
-        auditActivityDetail(updatedEvent, t),
-      ].filter(Boolean),
-    });
+    queueFlowLogEdit(message.guild, config, updatedEvent);
 
     if (cancelledAiVisionEventIds.has(event.id)) return updatedEvent;
 
     if (policy.moderationAction === 'ban_immediate') {
-      queueAutomaticAudit(message.guild, config, updatedEvent, t('automatic.logBanExecutionStarted'), {
-        details: [`**${t('automatic.plannedAction')}:** \`${moderationActionText(updatedEvent, t)}\``],
-      });
+      queueFlowLogEdit(message.guild, config, updatedEvent);
       const outcome = await executeAutomaticBan({
         guild: message.guild,
         event: updatedEvent,
@@ -1229,13 +1720,7 @@ function createAutomaticSpamDetectionManager({
       updatedEvent = await persistAutomaticBanOutcome(updatedEvent, outcome);
       userState = await configStore.getAutomaticSpamDetectionUser(updatedEvent.guildId, updatedEvent.userId).catch(() => userState);
       const storedEvent = await sendDangerMessage(message.guild, config, updatedEvent, userState);
-      queueAutomaticAudit(
-        message.guild,
-        config,
-        updatedEvent,
-        updatedEvent.status === 'banned' ? t('automatic.logBanCompleted') : t('automatic.logBanFailed'),
-        { details: [auditBanDetail(updatedEvent, t)] }
-      );
+      queueFlowLogEdit(message.guild, config, updatedEvent);
       logger.warn('Attachment spam danger recorded', {
         guildId: message.guild.id,
         channelId: message.channelId,
@@ -1252,17 +1737,7 @@ function createAutomaticSpamDetectionManager({
       ...updatedEvent,
       ...timeoutResult,
     }));
-    queueAutomaticAudit(
-      message.guild,
-      config,
-      updatedEvent,
-      timeoutResult.timeoutStatus === 'applied'
-        ? t('automatic.logTimeoutApplied')
-        : timeoutResult.timeoutStatus === 'already_active'
-          ? t('automatic.logTimeoutAlreadyActive')
-          : t('automatic.logTimeoutFailed'),
-      { details: [auditTimeoutDetail(updatedEvent, t)] }
-    );
+    queueFlowLogEdit(message.guild, config, updatedEvent);
     const timeoutSucceeded = timeoutResult.timeoutStatus === 'applied'
       || timeoutResult.timeoutStatus === 'already_active';
     if (
@@ -1494,20 +1969,7 @@ function createAutomaticSpamDetectionManager({
       if (guild) {
         const config = await getConfig(updatedEvent.guildId).catch(() => ({}));
         const t = createTranslator(config.language);
-        queueAutomaticAudit(guild, config, updatedEvent, aiAuditAction(t, updatedEvent.aiVisionStatus), {
-          details: [
-            auditAiDetail(updatedEvent, t),
-            updatedEvent.aiVisionModel
-              ? `**${t('automatic.logAiModel')}:** \`${updatedEvent.aiVisionModel}\``
-              : null,
-            updatedEvent.aiVisionMatchedWords?.length
-              ? `**${t('automatic.aiVisionMatchedWords')}:** ${updatedEvent.aiVisionMatchedWords.map((word) => `\`${word}\``).join(', ')}`
-              : null,
-            updatedEvent.aiVisionError
-              ? `**${t('automatic.aiVisionError')}:** \`${truncateText(updatedEvent.aiVisionError, 160)}\``
-              : null,
-          ].filter(Boolean),
-        });
+        queueFlowLogEdit(guild, config, updatedEvent);
       }
     }
     return updatedEvent;
@@ -1708,10 +2170,7 @@ function createAutomaticSpamDetectionManager({
   function queueAiVisionForDanger(message, dangerEvent, config) {
     if (dangerEvent.aiVisionStatus !== 'pending' || aiVisionTaskByEvent.has(dangerEvent.id)) return null;
     const model = dangerEvent.aiVisionModel || visionChecker?.model || OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
-    const t = createTranslator(config.language);
-    queueAutomaticAudit(message.guild, config, dangerEvent, t('automatic.logAiStarted'), {
-      details: [`**${t('automatic.logAiModel')}:** \`${model}\``],
-    });
+    queueFlowLogEdit(message.guild, config, dangerEvent);
     const task = runQueuedAiVision(
       message.guild.id,
       dangerEvent.id,
@@ -2225,10 +2684,7 @@ function createAutomaticSpamDetectionManager({
       if (auditEvent) {
         const config = await getConfig(interaction.guildId).catch(() => ({}));
         const t = createTranslator(config.language);
-        queueAutomaticAudit(interaction.guild, config, auditEvent, t('automatic.logEvidenceDeletionFailed'), {
-          actorId: interaction.user.id,
-          details: [`**${t('automatic.aiVisionError')}:** \`${truncateText(safeError(error), 160)}\``],
-        });
+        queueEvidenceDeletionFlowLogEdit(interaction.guild, config, auditEvent, interaction.user.id, null);
       }
       await interaction.editReply({
         content: `Evidence deletion stopped: \`${safeError(error)}\`. Press **Delete Evidence** again to retry any remaining messages.`,
@@ -2256,33 +2712,16 @@ function createAutomaticSpamDetectionManager({
     const auditConfig = await getConfig(interaction.guildId).catch(() => ({}));
     const auditT = createTranslator(auditConfig.language);
     if (auditEvent) {
-      queueAutomaticAudit(
-        interaction.guild,
-        auditConfig,
-        auditEvent,
-        auditT('automatic.logEvidenceDeletionRequested'),
-        { actorId: interaction.user.id }
-      );
+      queueEvidenceDeletionFlowLogEdit(interaction.guild, auditConfig, auditEvent, interaction.user.id, null);
     }
     const outcomeEvent = completedEvent || auditEvent;
     if (outcomeEvent) {
-      queueAutomaticAudit(
-        interaction.guild,
-        auditConfig,
-        outcomeEvent,
-        result.failed > 0
-          ? auditT('automatic.logEvidenceDeletionFailed')
-          : auditT('automatic.logEvidenceDeletionCompleted'),
-        {
-          actorId: interaction.user.id,
-          details: [
-            `**${auditT('automatic.logEvidenceDeleted')}:** \`${result.deleted}\``,
-            `**${auditT('automatic.logEvidenceUnavailable')}:** \`${result.alreadyDeleted}\``,
-            `**${auditT('automatic.logEvidencePreserved')}:** \`${result.preserved}\``,
-            `**${auditT('automatic.logEvidenceFailed')}:** \`${result.failed}\``,
-          ],
-        }
-      );
+      queueEvidenceDeletionFlowLogEdit(interaction.guild, auditConfig, outcomeEvent, interaction.user.id, {
+        deleted: result.deleted,
+        preserved: result.preserved,
+        alreadyDeleted: result.alreadyDeleted,
+        failed: result.failed,
+      });
     }
     if (completedEvent) {
       const updatedMessage = await sendOrUpdateEventMessage(completedEvent).catch((error) => {
@@ -2346,9 +2785,7 @@ function createAutomaticSpamDetectionManager({
 
     const requestConfig = await getConfig(event.guildId).catch(() => ({}));
     const requestT = createTranslator(requestConfig.language);
-    queueAutomaticAudit(interaction.guild, requestConfig, event, requestT('automatic.logTimeoutRemovalRequested'), {
-      actorId: interaction.user.id,
-    });
+    queueTimeoutRemovalFlowLogEdit(interaction.guild, requestConfig, event, interaction.user.id);
     await interaction.deferUpdate().catch(() => null);
     const result = await configStore.withAutomaticSpamDetectionEventLock(event.id, async (dbClient) => {
       const locked = await getLockedDangerActionEvent(event, dbClient);
@@ -2415,6 +2852,7 @@ function createAutomaticSpamDetectionManager({
         requestT('automatic.logBanCancelled'),
         { actorId: interaction.user.id }
       );
+      queueFlowLogEdit(interaction.guild, requestConfig, result.updated);
     }
     if (result.updated) await sendOrUpdateEventMessage(result.updated);
     if (!result.stale && result.updated) {
@@ -2422,22 +2860,7 @@ function createAutomaticSpamDetectionManager({
       if (guild) {
         const config = await getConfig(result.updated.guildId).catch(() => ({}));
         const t = createTranslator(config.language);
-        queueAutomaticAudit(
-          guild,
-          config,
-          result.updated,
-          result.updated.status === 'timeout_removed'
-            ? t('automatic.logTimeoutRemoved')
-            : result.updated.status === 'user_unavailable'
-              ? t('automatic.logUserUnavailable')
-              : t('automatic.logTimeoutRemovalFailed'),
-          {
-            actorId: interaction.user.id,
-            details: result.updated.decisionError
-              ? [`**${t('automatic.aiVisionError')}:** \`${truncateText(result.updated.decisionError, 160)}\``]
-              : [],
-          }
-        );
+        queueTimeoutRemovalFlowLogEdit(guild, config, result.updated, interaction.user.id);
         if (result.updated.status === 'timeout_removed') {
           await moderationWorkflow.sendTimeoutRemovedDm({
             userId: result.updated.userId,
@@ -2464,9 +2887,7 @@ function createAutomaticSpamDetectionManager({
 
     const config = await getConfig(event.guildId);
     const t = createTranslator(config.language);
-    queueAutomaticAudit(interaction.guild, config, event, t('automatic.logBanRequested'), {
-      actorId: interaction.user.id,
-    });
+    queueBanActionFlowLogEdit(interaction.guild, config, event, interaction.user.id);
     await interaction.reply({
       content: t('automatic.banConfirmation', { userId: event.userId }),
       components: [
@@ -2501,9 +2922,7 @@ function createAutomaticSpamDetectionManager({
     }
     const event = await getInteractionEvent(interaction);
     if (event) {
-      queueAutomaticAudit(interaction.guild, config, event, t('automatic.logBanCancelled'), {
-        actorId: interaction.user.id,
-      });
+      queueBanActionFlowLogEdit(interaction.guild, config, event, interaction.user.id);
     }
     await interaction.update({
       content: t('automatic.banCancelled'),
@@ -2537,9 +2956,7 @@ function createAutomaticSpamDetectionManager({
     }
     if (!await requireLatestOpenDanger(interaction, event)) return;
 
-    queueAutomaticAudit(interaction.guild, config, event, t('automatic.logBanConfirmed'), {
-      actorId: interaction.user.id,
-    });
+    queueBanActionFlowLogEdit(interaction.guild, config, event, interaction.user.id);
     await interaction.deferUpdate().catch(() => null);
     const result = await runGuildConfigOperation(event.guildId, async () => {
       const guild = interaction.guild || await client.guilds.fetch(event.guildId).catch(() => null);
@@ -2594,30 +3011,14 @@ function createAutomaticSpamDetectionManager({
       result.updated = await persistAutomaticBanOutcome(result.event, result.outcome);
     }
     if (result.blocked) {
-      queueAutomaticAudit(interaction.guild, config, event, t('automatic.logBanFailed'), {
-        actorId: interaction.user.id,
-        details: [`**${t('automatic.status')}:** \`${t('automatic.banFailedConfirmation')}\``],
-      });
+      queueBanActionFlowLogEdit(interaction.guild, config, event, interaction.user.id);
     }
     if (result.updated) await sendOrUpdateEventMessage(result.updated);
     if (!result.stale && !result.blocked && result.updated) {
       const guild = interaction.guild
         || await client.guilds.fetch(result.updated.guildId).catch(() => null);
       if (guild) {
-        queueAutomaticAudit(
-          guild,
-          config,
-          result.updated,
-          result.updated.status === 'banned'
-            ? t('automatic.logBanCompleted')
-            : t('automatic.logBanFailed'),
-          {
-            actorId: interaction.user.id,
-            details: result.updated.decisionError
-              ? [`**${t('automatic.aiVisionError')}:** \`${truncateText(result.updated.decisionError, 160)}\``]
-              : [],
-          }
-        );
+        queueBanActionFlowLogEdit(guild, config, result.updated, interaction.user.id);
       }
     }
     await interaction.editReply({

@@ -1,3 +1,9 @@
+const { createLogger } = require('../lib/logger');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const aiVisionLogger = createLogger('ai-vision-checker');
+const OPENROUTER_USAGE_LOG = path.join(__dirname, '..', '..', 'openrouter-usage.log');
 const DEFAULT_OPENROUTER_MODEL = 'xiaomi/mimo-v2.5';
 const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 const FETCH_TIMEOUT_MS = 10_000;
@@ -352,9 +358,33 @@ async function callOpenRouter({ apiKey, model, imageUrl, base64Image, mimeType, 
       stream: false,
     }),
   }, 'openrouter');
+  const unbilledAiVision = openRouterResponseIsUnbilled(body);
+  const usage = body?.usage;
+  if (usage) {
+    aiVisionLogger.info('OpenRouter API call completed', {
+      model,
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+      cost: Number.isFinite(usage.cost) ? usage.cost : null,
+      unbilled: unbilledAiVision,
+    });
+    const line = [
+      new Date().toISOString(),
+      model,
+      usage.prompt_tokens ?? '',
+      usage.completion_tokens ?? '',
+      usage.total_tokens ?? '',
+      Number.isFinite(usage.cost) ? usage.cost : '',
+      unbilledAiVision,
+    ].join('\t') + '\n';
+    fs.appendFile(OPENROUTER_USAGE_LOG, line, (err) => {
+      if (err) aiVisionLogger.error('Failed to write OpenRouter usage log', { error: err.message });
+    });
+  }
   return {
     text: extractOpenRouterText(body),
-    unbilledAiVision: openRouterResponseIsUnbilled(body),
+    unbilledAiVision,
   };
 }
 

@@ -326,11 +326,11 @@ function createSpamCatcherManager({
           .addActionRowComponents(
             new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setCustomId(`${REMOVE_TIMEOUT_CONFIRM_PREFIX}:${event.id}`)
+                .setCustomId(`${REMOVE_TIMEOUT_CONFIRM_PREFIX}:${event.id}:${adminId}`)
                 .setLabel('✅ Confirm Remove Timeout')
                 .setStyle(ButtonStyle.Success),
               new ButtonBuilder()
-                .setCustomId(`${REMOVE_TIMEOUT_CANCEL_PREFIX}:${event.id}`)
+                .setCustomId(`${REMOVE_TIMEOUT_CANCEL_PREFIX}:${event.id}:${adminId}`)
                 .setLabel('↩️ Cancel')
                 .setStyle(ButtonStyle.Secondary)
             )
@@ -601,6 +601,12 @@ function createSpamCatcherManager({
   async function handleCancelRemoveTimeout(interaction) {
     if (!await requireAdmin(interaction, 'cancel Spam Catcher timeout actions')) return;
 
+    const [, , requesterId] = interaction.customId.split(':');
+    if (requesterId && requesterId !== interaction.user.id) {
+      await interaction.reply({ content: 'Only the administrator who requested this timeout removal can cancel it.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+
     const event = await getInteractionEvent(interaction);
     if (!event) {
       await interaction.reply({ content: 'Spam Catcher event not found.', flags: MessageFlags.Ephemeral }).catch(() => null);
@@ -658,21 +664,30 @@ function createSpamCatcherManager({
     });
 
     if (timeoutError) {
-      await interaction.reply({
-        content: `Failed to remove timeout: ${timeoutError.message || timeoutError}`,
-        flags: MessageFlags.Ephemeral,
-      }).catch(() => null);
+      const failedEvent = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => event);
+      const displayEvent = failedEvent || event;
+      await interaction.update(buildReviewComponents(displayEvent)).catch(async () => {
+        await interaction.reply({
+          content: `Failed to remove timeout: ${safeError(timeoutError)}`,
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => null);
+      });
+      await logAction(displayEvent, 'Spam Catcher Timeout Removal Failed', [
+        `- Attempted by: <@${interaction.user.id}>`,
+        `- Error: \`${safeError(timeoutError)}\``,
+      ]);
       return;
     }
 
-    const updated = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => event);
+    const updated = await configStore.resolveSpamCatcherAppeal(event.id, interaction.user.id).catch(() => null);
+    const displayEvent = updated || { ...event, status: 'timeout_removed', decidedBy: interaction.user.id, updatedAt: new Date() };
     const dmSent = interaction.guild
-      ? await notifyTimeoutRemoved(interaction.guild, updated || event).catch(() => false)
+      ? await notifyTimeoutRemoved(interaction.guild, displayEvent).catch(() => false)
       : false;
-    await interaction.update(buildResolvedReviewComponents(updated || event)).catch(async () => {
+    await interaction.update(buildResolvedReviewComponents(displayEvent)).catch(async () => {
       await interaction.reply({ content: 'Timeout removed, but failed to update review message.', flags: MessageFlags.Ephemeral }).catch(() => null);
     });
-    await logAction(updated || event, 'Spam Catcher Timeout Removed', [
+    await logAction(displayEvent, 'Spam Catcher Timeout Removed', [
       `- Removed by: <@${interaction.user.id}>`,
       `- DM sent: \`${dmSent ? 'yes' : 'no'}\``,
     ]);
@@ -690,6 +705,13 @@ function createSpamCatcherManager({
       await interaction.reply({ content: 'Spam Catcher is not enabled for this guild.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;
     }
+
+    const [, , requesterId] = interaction.customId.split(':');
+    if (requesterId && requesterId !== interaction.user.id) {
+      await interaction.reply({ content: 'Only the administrator who requested this timeout removal can confirm it.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return;
+    }
+
     if (!canReviewTimeout(event)) {
       await interaction.reply({ content: 'This Spam Catcher event is no longer waiting for admin action.', flags: MessageFlags.Ephemeral }).catch(() => null);
       return;

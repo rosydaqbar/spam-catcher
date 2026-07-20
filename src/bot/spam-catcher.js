@@ -97,7 +97,7 @@ function createSpamCatcherManager({
         isValidRequiredChannel(current.logChannelId),
         isValidRequiredChannel(current.reviewChannelId),
       ]);
-      if (logValid && reviewValid && current.logChannelId !== current.reviewChannelId) return current;
+      if (logValid && reviewValid) return current;
 
       failedClosed = true;
       return configStore.saveSpamCatcherConfig(guild.id, {

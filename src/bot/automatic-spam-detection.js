@@ -573,8 +573,7 @@ function createAutomaticSpamDetectionManager({
       isValid(config.logChannelId),
       isValid(config.reviewChannelId),
     ]);
-    const channelsAreDistinct = config.logChannelId !== config.reviewChannelId;
-    if (logValid && reviewValid && channelsAreDistinct) return config;
+    if (logValid && reviewValid) return config;
 
     await configStore.saveSpamCatcherConfig(guild.id, {
       ...config,

@@ -348,7 +348,6 @@ function createSetupCommandManager({
     return Boolean(
       config.logChannelId
       && config.reviewChannelId
-      && config.logChannelId !== config.reviewChannelId
     );
   }
 

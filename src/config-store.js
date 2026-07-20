@@ -1046,8 +1046,8 @@ async function withAutomaticSpamDetectionEventLock(eventId, work) {
 
 async function saveSpamCatcherConfig(guildId, config, dbClient = null) {
   await ensureSpamCatcherConfigTable();
-  const save = async (client, configToSave) => {
-    const normalized = normalizeSpamCatcherConfig(configToSave);
+  const normalized = normalizeSpamCatcherConfig(config);
+  const save = async (client) => {
     await client.query(
       `
         INSERT INTO spam_catcher_config (guild_id, config_json, updated_at)
@@ -1060,11 +1060,8 @@ async function saveSpamCatcherConfig(guildId, config, dbClient = null) {
     );
     return normalized;
   };
-  if (dbClient) return save(dbClient, config);
-  return withGuildConfigLock(guildId, async (current, client) => {
-    const merged = { ...current, ...config };
-    return save(client, merged);
-  });
+  if (dbClient) return save(dbClient);
+  return withGuildConfigLock(guildId, async (_current, client) => save(client));
 }
 
 async function setGuildAiVisionDailyLimit(guildId, limit) {

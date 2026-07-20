@@ -851,6 +851,10 @@ function createSetupCommandManager({
 
   async function buildPanelPayload(panel, guildId, config, statusMessage, options = {}) {
     if (config.requiredChannelsSet !== 1) {
+      const guild = client.guilds.cache.get(guildId);
+      if (guild) config = await reconcileRequiredChannels(guild);
+    }
+    if (config.requiredChannelsSet !== 1) {
       return buildRequiredChannelsStagePayload(config, statusMessage, options);
     }
     if (panel === 'trap') return buildTrapPanelPayload(config, statusMessage, options);
@@ -1187,13 +1191,7 @@ function createSetupCommandManager({
     return runGuildConfigOperation(guild.id, async () => {
       const current = await configStore.getSpamCatcherConfig(guild.id);
       const validity = await validateRequiredChannels(guild, current);
-      let requiredChannelsSet = 0;
-
-      if (current.requiredChannelsSet === 1 && validity.bothValid) {
-        requiredChannelsSet = 1;
-      } else if (current.requiredChannelsSet == null && validity.bothValid) {
-        requiredChannelsSet = 1;
-      }
+      let requiredChannelsSet = validity.bothValid ? 1 : 0;
 
       const next = applyRequiredChannelSafety(current, validity, requiredChannelsSet);
       const changed = [
@@ -1473,8 +1471,9 @@ function createSetupCommandManager({
           ? t(type === 'log' ? 'setup.logSaved' : 'setup.reviewSaved')
           : t('setup.requiredChannelInvalid');
       await sendSettingsAudit(interaction, before, saved);
+      const targetPanel = panel === 'required' && !validity.bothValid ? 'required' : 'dashboard';
       await interaction.editReply(await buildPanelPayload(
-        panel === 'required' ? 'required' : 'dashboard',
+        targetPanel,
         interaction.guildId,
         saved,
         statusMessage

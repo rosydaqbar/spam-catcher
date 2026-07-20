@@ -1163,12 +1163,7 @@ function createSetupCommandManager({
       isValid(config.logChannelId),
       isValid(config.reviewChannelId),
     ]);
-    const sameChannel = Boolean(
-      config.logChannelId
-      && config.reviewChannelId
-      && config.logChannelId === config.reviewChannelId
-    );
-    return { logValid, reviewValid, sameChannel, bothValid: logValid && reviewValid && !sameChannel };
+    return { logValid, reviewValid, bothValid: logValid && reviewValid };
   }
 
   function applyRequiredChannelSafety(config, validity, requiredChannelsSet) {
@@ -1463,13 +1458,11 @@ function createSetupCommandManager({
       const { before, saved, validity } = await saveRequiredChannelSelection(interaction, type);
       const t = createTranslator(saved.language);
       const selectedChannelValid = type === 'log' ? validity.logValid : validity.reviewValid;
-      const statusMessage = validity.sameChannel
-        ? t('setup.requiredChannelsMustDiffer')
-        : validity.bothValid
+      const statusMessage = validity.bothValid
         ? t('setup.requiredChannelsCompleted')
-          : selectedChannelValid
-          ? t(type === 'log' ? 'setup.logSaved' : 'setup.reviewSaved')
-          : t('setup.requiredChannelInvalid');
+        : selectedChannelValid
+        ? t(type === 'log' ? 'setup.logSaved' : 'setup.reviewSaved')
+        : t('setup.requiredChannelInvalid');
       await sendSettingsAudit(interaction, before, saved);
       const targetPanel = panel === 'required' && !validity.bothValid ? 'required' : 'dashboard';
       await interaction.editReply(await buildPanelPayload(

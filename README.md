@@ -267,6 +267,8 @@ Follow the beginner guide for Supabase, other PostgreSQL cloud providers, or Pos
 
 Tables are created automatically at runtime. You can also apply `scripts/schema-postgres.sql` manually.
 
+Pending Automatic Detection alert windows and their editable log-message references are stored in `automatic_spam_detection_users`; confirmed windows copy the reference to `automatic_spam_detection_events`. This allows no-spam and danger progress to recover after a bot restart.
+
 Required tables:
 
 - `spam_catcher_config`

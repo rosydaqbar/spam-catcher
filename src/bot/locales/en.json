@@ -263,6 +263,7 @@
     "logChannelCount": "{count} channels",
     "logIncidentResolved": "Incident resolved",
     "logAlertStarted": "Alert window started",
+    "logNoSpamDetected": "Window expired — no spam detected",
     "logDangerConfirmed": "Danger confirmed",
     "logTimeoutApplied": "Timeout applied",
     "logTimeoutAlreadyActive": "Existing timeout detected",

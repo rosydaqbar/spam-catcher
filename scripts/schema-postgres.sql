@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_users (
   last_alert_at TIMESTAMPTZ,
   last_alert_window_expires_at TIMESTAMPTZ,
   last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE,
+  last_alert_attachment_count INTEGER NOT NULL DEFAULT 0,
+  last_alert_flow_log_channel_id TEXT,
+  last_alert_flow_log_message_id TEXT,
+  last_alert_resolved_at TIMESTAMPTZ,
+  last_alert_outcome TEXT,
+  last_alert_flow_log_finalized_at TIMESTAMPTZ,
+  last_alert_tracking_version INTEGER NOT NULL DEFAULT 0,
   last_danger_at TIMESTAMPTZ,
   last_channel_id TEXT,
   last_message_id TEXT,
@@ -87,6 +94,8 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_events (
   ai_vision_checked_at TIMESTAMPTZ,
   review_channel_id TEXT,
   review_message_id TEXT,
+  flow_log_channel_id TEXT,
+  flow_log_message_id TEXT,
   decided_by TEXT,
   decision_error TEXT,
   evidence_deleted_by TEXT,
@@ -118,11 +127,38 @@ CREATE TABLE IF NOT EXISTS automatic_spam_detection_ai_usage_reservations (
 ALTER TABLE automatic_spam_detection_users
   ADD COLUMN IF NOT EXISTS last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE;
 
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_attachment_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_flow_log_channel_id TEXT;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_flow_log_message_id TEXT;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_resolved_at TIMESTAMPTZ;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_outcome TEXT;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_flow_log_finalized_at TIMESTAMPTZ;
+
+ALTER TABLE automatic_spam_detection_users
+  ADD COLUMN IF NOT EXISTS last_alert_tracking_version INTEGER NOT NULL DEFAULT 0;
+
 ALTER TABLE automatic_spam_detection_events
   ADD COLUMN IF NOT EXISTS evidence_deleted_by TEXT;
 
 ALTER TABLE automatic_spam_detection_events
   ADD COLUMN IF NOT EXISTS evidence_deleted_at TIMESTAMPTZ;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS flow_log_channel_id TEXT;
+
+ALTER TABLE automatic_spam_detection_events
+  ADD COLUMN IF NOT EXISTS flow_log_message_id TEXT;
 
 ALTER TABLE automatic_spam_detection_events
   ADD COLUMN IF NOT EXISTS moderation_action TEXT NOT NULL DEFAULT 'timeout';

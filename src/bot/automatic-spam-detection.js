@@ -46,6 +46,7 @@ const AI_VISION_OCR_MAX_LENGTH = 350;
 const AI_VISION_GUILD_CONCURRENCY = 2;
 const EVENT_MESSAGE_UPDATE_DEBOUNCE_MS = 750;
 const EVENT_MESSAGE_UPDATE_RETRY_DELAYS_MS = [1500, 5000, 15_000];
+const ALERT_WINDOW_FALLBACK_GRACE_MS = 1000;
 
 function createAutomaticSpamDetectionManager({
   client,
@@ -66,6 +67,9 @@ function createAutomaticSpamDetectionManager({
   const automaticAuditQueueByGuild = new Map();
   const activeFlowLogs = new Map();
   const flowLogQueueByGuild = new Map();
+  const flowLogGenerationByGuild = new Map();
+  const flowLogGenerationByAuthor = new Map();
+  const alertWindowTimerByAuthor = new Map();
   const activeTimeoutRemovalLogs = new Map();
   const timeoutRemovalLogQueueByGuild = new Map();
   const activeBanActionLogs = new Map();
@@ -110,6 +114,18 @@ function createAutomaticSpamDetectionManager({
 
   function authorKey(guildId, userId) {
     return `${guildId}:${userId}`;
+  }
+
+  function flowLogKey(guildId, userId, windowStartedAt, eventId = null) {
+    const startedAtMs = windowStartedAt ? new Date(windowStartedAt).getTime() : NaN;
+    return `${authorKey(guildId, userId)}:${Number.isFinite(startedAtMs) ? startedAtMs : `event-${eventId || 'unknown'}`}`;
+  }
+
+  function clearActiveFlowLogsForAuthor(guildId, userId) {
+    const prefix = `${authorKey(guildId, userId)}:`;
+    activeFlowLogs.forEach((_reference, key) => {
+      if (key.startsWith(prefix)) activeFlowLogs.delete(key);
+    });
   }
 
   function safeError(error) {
@@ -592,7 +608,6 @@ function createAutomaticSpamDetectionManager({
       reviewChannelId: config.reviewChannelId,
       logValid,
       reviewValid,
-      channelsAreDistinct,
     });
     return null;
   }
@@ -614,7 +629,7 @@ function createAutomaticSpamDetectionManager({
     }
 
     const row = await configStore.getAutomaticSpamDetectionUser(guildId, userId);
-    if (!row?.lastAlertAt) return null;
+    if (!row?.lastAlertAt || (row.lastAlertResolvedAt && row.lastAlertOutcome !== 'no_spam')) return null;
 
     const startedAtMs = row.lastAlertAt.getTime();
     const windowMs = config.attachmentSpamWindowSeconds * 1000;
@@ -632,7 +647,7 @@ function createAutomaticSpamDetectionManager({
         {
           messageId: row.lastMessageId,
           channelId: row.lastChannelId,
-          attachmentCount: config.attachmentSpamThreshold,
+          attachmentCount: row.lastAlertAttachmentCount || config.attachmentSpamThreshold,
           timestampMs: startedAtMs,
           protected: row.lastAlertProtected,
         },
@@ -705,11 +720,13 @@ function createAutomaticSpamDetectionManager({
     const t = createTranslator(config.language);
     const lines = [];
     const steps = [];
-    let titleEmoji = '\u{1F504}';
+    let titleEmoji = '\u{23F3}';
 
-    if (event.banStatus === 'banned') {
+    if (event.status === 'no_spam') {
+      titleEmoji = '\u{2705}';
+    } else if (event.banStatus === 'banned') {
       titleEmoji = BANNED_EMOJI;
-    } else if (event.timeoutStatus || event.status === 'danger_confirmed') {
+    } else if (event.dangerConfirmedAt || event.status === 'danger' || event.status === 'danger_confirmed') {
       titleEmoji = DANGER_TITLE_EMOJI;
     }
     lines.push(`## ${titleEmoji} ${t('automatic.logTitle')}`);
@@ -754,7 +771,12 @@ function createAutomaticSpamDetectionManager({
 
     doneStep(t('automatic.logAlertStarted'));
 
-    const dangerDone = event.dangerConfirmedAt || event.timeoutStatus || event.banStatus || event.aiVisionStatus;
+    if (event.status === 'no_spam') {
+      doneStep(t('automatic.logNoSpamDetected'));
+    }
+
+    const dangerDone = event.status !== 'no_spam'
+      && (event.dangerConfirmedAt || event.status === 'danger' || event.status === 'danger_confirmed');
     if (dangerDone) {
       doneStep(t('automatic.logDangerConfirmed'));
     }
@@ -799,7 +821,7 @@ function createAutomaticSpamDetectionManager({
       flags: MessageFlags.IsComponentsV2,
       components: [
         new ContainerBuilder()
-          .setAccentColor(0x64748b)
+          .setAccentColor(event.status === 'no_spam' ? 0x22c55e : 0x64748b)
           .addTextDisplayComponents(
             new TextDisplayBuilder().setContent(lines.filter(Boolean).join('\n'))
           ),
@@ -877,7 +899,24 @@ function createAutomaticSpamDetectionManager({
   }
 
   async function sendOrEditFlowLogInner(guild, config, event) {
-    const mapKey = `${guild.id}:${event.userId}`;
+    if (!event.windowStartedAt) return sendOrEditFlowLogInnerUnlocked(guild, config, event);
+    return configStore.withAutomaticSpamDetectionFlowLogLock(
+      guild.id,
+      event.userId,
+      event.windowStartedAt,
+      async (alertState, dbClient) => {
+        if (event.status === 'no_spam') {
+          const sameWindow = alertState?.lastAlertAt?.getTime() === new Date(event.windowStartedAt).getTime();
+          if (!sameWindow || alertState.lastAlertOutcome !== 'no_spam') return null;
+        }
+        return sendOrEditFlowLogInnerUnlocked(guild, config, event, dbClient);
+      }
+    );
+  }
+
+  async function sendOrEditFlowLogInnerUnlocked(guild, config, event, dbClient = null) {
+    const mapKey = flowLogKey(guild.id, event.userId, event.windowStartedAt, event.id);
+    if (event.startNewFlow) activeFlowLogs.delete(mapKey);
     const existing = activeFlowLogs.get(mapKey);
     let targetChannel;
     let targetMessage;
@@ -892,14 +931,15 @@ function createAutomaticSpamDetectionManager({
     if (targetMessage) {
       try {
         await targetMessage.edit(buildFlowLogPayload(event, config));
-        return;
+        await rememberFlowLog(event, targetMessage, dbClient);
+        return targetMessage;
       } catch {
         activeFlowLogs.delete(mapKey);
       }
     }
 
     const logChannel = await getLogChannel(guild, config);
-    if (!logChannel) return;
+    if (!logChannel) return null;
     const message = await logChannel.send(buildFlowLogPayload(event, config)).catch((error) => {
       logger.error('Failed to send Automatic Spam Detection flow log', {
         guildId: guild.id,
@@ -910,15 +950,50 @@ function createAutomaticSpamDetectionManager({
     });
     if (message) {
       activeFlowLogs.set(mapKey, { channelId: logChannel.id, messageId: message.id });
+      await rememberFlowLog(event, message, dbClient);
     }
+    return message;
+  }
+
+  async function rememberFlowLog(event, message, dbClient = null) {
+    if (!event.windowStartedAt || !message) return;
+    const saveReference = event.id
+      ? configStore.saveAutomaticSpamDetectionEventFlowLog(event.id, message.channelId, message.id, dbClient)
+      : configStore.saveAutomaticSpamDetectionAlertFlowLog({
+        guildId: event.guildId,
+        userId: event.userId,
+        alertAt: event.windowStartedAt,
+        channelId: message.channelId,
+        messageId: message.id,
+      }, dbClient);
+    await saveReference.then(async () => {
+      if (!event.id) return;
+      await configStore.markAutomaticSpamDetectionAlertFlowLogFinalized({
+        guildId: event.guildId,
+        userId: event.userId,
+        alertAt: event.windowStartedAt,
+        outcome: 'danger',
+      }, dbClient);
+    }).catch((error) => {
+      logger.error('Failed to persist Automatic Detection alert flow-log reference', {
+        guildId: event.guildId,
+        userId: event.userId,
+        error: safeError(error),
+      });
+    });
   }
 
   function queueFlowLogEdit(guild, config, event) {
-    if (!event?.userId || !guild) return;
+    if (!event?.userId || !guild) return Promise.resolve(null);
+    const author = authorKey(guild.id, event.userId);
+    const guildGeneration = flowLogGenerationByGuild.get(guild.id) || 0;
+    const authorGeneration = flowLogGenerationByAuthor.get(author) || 0;
     const previous = flowLogQueueByGuild.get(guild.id) || Promise.resolve();
-    const current = previous.catch(() => null).then(() =>
-      sendOrEditFlowLogInner(guild, config, event)
-    );
+    const current = previous.catch(() => null).then(() => {
+      if ((flowLogGenerationByGuild.get(guild.id) || 0) !== guildGeneration) return null;
+      if ((flowLogGenerationByAuthor.get(author) || 0) !== authorGeneration) return null;
+      return sendOrEditFlowLogInner(guild, config, event);
+    });
     flowLogQueueByGuild.set(guild.id, current);
     current.catch((error) => {
       logger.error('Automatic Spam Detection flow log queue failed', {
@@ -931,6 +1006,188 @@ function createAutomaticSpamDetectionManager({
         flowLogQueueByGuild.delete(guild.id);
       }
     });
+    return current;
+  }
+
+  async function queueAuthorOperation(guildId, userId, operation) {
+    const key = authorKey(guildId, userId);
+    const previous = messageQueueByAuthor.get(key) || Promise.resolve();
+    const current = previous.catch(() => null).then(operation);
+    messageQueueByAuthor.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (messageQueueByAuthor.get(key) === current) messageQueueByAuthor.delete(key);
+    }
+  }
+
+  function clearAlertWindowFallback(key, expectedStartedAtMs = null) {
+    const entry = alertWindowTimerByAuthor.get(key);
+    if (!entry) return;
+    if (Number.isFinite(expectedStartedAtMs) && entry.startedAtMs !== expectedStartedAtMs) return;
+    clearTimeout(entry.timer);
+    alertWindowTimerByAuthor.delete(key);
+  }
+
+  function alertFlowEvent(alert, status) {
+    return {
+      guildId: alert.guildId,
+      userId: alert.userId,
+      sourceChannelId: alert.lastChannelId,
+      sourceMessageId: alert.lastMessageId,
+      attachmentCount: alert.lastAlertAttachmentCount,
+      followupMessageCount: 1,
+      followupAttachmentCount: alert.lastAlertAttachmentCount,
+      channels: [alert.lastChannelId].filter(Boolean),
+      windowStartedAt: alert.lastAlertAt,
+      windowExpiresAt: alert.lastAlertWindowExpiresAt,
+      status,
+      timeoutStatus: null,
+      moderationAction: 'none',
+      banStatus: 'none',
+      aiVisionStatus: null,
+    };
+  }
+
+  async function finalizeAlertWindow(alert) {
+    if (!alert?.lastAlertAt || !alert.lastAlertWindowExpiresAt) return null;
+    const resolved = await configStore.resolveAutomaticSpamDetectionAlertWindow({
+      guildId: alert.guildId,
+      userId: alert.userId,
+      alertAt: alert.lastAlertAt,
+    });
+    if (!resolved) return null;
+
+    const key = authorKey(resolved.guildId, resolved.userId);
+    clearAlertWindowFallback(key, resolved.lastAlertAt.getTime());
+    const session = attachmentSessionByAuthor.get(key);
+    if (session?.startedAtMs === resolved.lastAlertAt.getTime()) {
+      attachmentSessionByAuthor.delete(key);
+    }
+    const resolvedFlowKey = flowLogKey(resolved.guildId, resolved.userId, resolved.lastAlertAt);
+
+    const guild = client.guilds.cache.get(resolved.guildId)
+      || await client.guilds.fetch(resolved.guildId).catch(() => null);
+    if (!guild) return resolved;
+    if (resolved.lastAlertFlowLogChannelId && resolved.lastAlertFlowLogMessageId) {
+      activeFlowLogs.set(resolvedFlowKey, {
+        channelId: resolved.lastAlertFlowLogChannelId,
+        messageId: resolved.lastAlertFlowLogMessageId,
+      });
+    }
+    const config = await getConfig(resolved.guildId).catch(() => ({}));
+    const message = await queueFlowLogEdit(guild, config, alertFlowEvent(resolved, 'no_spam'));
+    if (message) {
+      const finalized = await configStore.markAutomaticSpamDetectionAlertFlowLogFinalized({
+        guildId: resolved.guildId,
+        userId: resolved.userId,
+        alertAt: resolved.lastAlertAt,
+      });
+      if (!finalized) {
+        const current = await configStore.getAutomaticSpamDetectionUser(resolved.guildId, resolved.userId).catch(() => null);
+        if (current?.lastAlertOutcome === 'danger') {
+          const dangerEvent = await configStore.getAutomaticSpamDetectionWindowEventForMessage(
+            resolved.guildId,
+            resolved.userId,
+            resolved.lastAlertAt
+          ).catch(() => null);
+          if (dangerEvent?.windowClaimed) {
+            if (dangerEvent.flowLogChannelId && dangerEvent.flowLogMessageId) {
+              activeFlowLogs.set(flowLogKey(
+                dangerEvent.guildId,
+                dangerEvent.userId,
+                dangerEvent.windowStartedAt,
+                dangerEvent.id
+              ), {
+                channelId: dangerEvent.flowLogChannelId,
+                messageId: dangerEvent.flowLogMessageId,
+              });
+            }
+            await queueFlowLogEdit(guild, config, {
+              ...dangerEvent,
+              status: dangerEvent.status === 'evaluating' ? 'danger_confirmed' : dangerEvent.status,
+            });
+          }
+        }
+      }
+    }
+    return resolved;
+  }
+
+  function scheduleAlertWindowFallback(alert) {
+    const startedAtMs = alert?.lastAlertAt?.getTime?.();
+    const expiresAtMs = alert?.lastAlertWindowExpiresAt?.getTime?.();
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(expiresAtMs)) return;
+    const key = authorKey(alert.guildId, alert.userId);
+    const existing = alertWindowTimerByAuthor.get(key);
+    if (existing?.startedAtMs === startedAtMs && existing.expiresAtMs === expiresAtMs) return;
+    clearAlertWindowFallback(key);
+
+    const delay = Math.max(0, expiresAtMs + ALERT_WINDOW_FALLBACK_GRACE_MS - Date.now());
+    const timer = setTimeout(() => {
+      const current = alertWindowTimerByAuthor.get(key);
+      if (current?.timer === timer) alertWindowTimerByAuthor.delete(key);
+      queueAuthorOperation(alert.guildId, alert.userId, () => finalizeAlertWindow(alert)).catch((error) => {
+        logger.error('Failed to finalize expired Automatic Detection alert window', {
+          guildId: alert.guildId,
+          userId: alert.userId,
+          error: safeError(error),
+        });
+      });
+    }, delay);
+    timer.unref?.();
+    alertWindowTimerByAuthor.set(key, { timer, startedAtMs, expiresAtMs });
+  }
+
+  async function recoverDangerAlertFlow(alert) {
+    const event = await configStore.getAutomaticSpamDetectionWindowEventForMessage(
+      alert.guildId,
+      alert.userId,
+      alert.lastAlertAt
+    );
+    if (!event?.windowClaimed) return null;
+    const guild = client.guilds.cache.get(alert.guildId)
+      || await client.guilds.fetch(alert.guildId).catch(() => null);
+    if (!guild) return null;
+    const channelId = event.flowLogChannelId || alert.lastAlertFlowLogChannelId;
+    const messageId = event.flowLogMessageId || alert.lastAlertFlowLogMessageId;
+    if (channelId && messageId) {
+      activeFlowLogs.set(flowLogKey(event.guildId, event.userId, event.windowStartedAt, event.id), {
+        channelId,
+        messageId,
+      });
+    }
+    const config = await getConfig(alert.guildId).catch(() => ({}));
+    return queueFlowLogEdit(guild, config, {
+      ...event,
+      status: event.status === 'evaluating' ? 'danger_confirmed' : event.status,
+    });
+  }
+
+  async function recoverPendingAutomaticSpamDetectionAlerts() {
+    if (!configStore.getPendingAutomaticSpamDetectionAlerts) return;
+    const alerts = await configStore.getPendingAutomaticSpamDetectionAlerts(500, [...allowedGuildIds]);
+    for (const alert of alerts) {
+      if (!isGuildAllowed(alert.guildId)) continue;
+      const key = authorKey(alert.guildId, alert.userId);
+      if (alert.lastAlertFlowLogChannelId && alert.lastAlertFlowLogMessageId) {
+        activeFlowLogs.set(flowLogKey(alert.guildId, alert.userId, alert.lastAlertAt), {
+          channelId: alert.lastAlertFlowLogChannelId,
+          messageId: alert.lastAlertFlowLogMessageId,
+        });
+      }
+      if (alert.lastAlertOutcome === 'danger') {
+        await queueAuthorOperation(alert.guildId, alert.userId, () => recoverDangerAlertFlow(alert)).catch((error) => {
+          logger.error('Failed to recover Automatic Detection danger flow log', {
+            guildId: alert.guildId,
+            userId: alert.userId,
+            error: safeError(error),
+          });
+        });
+        continue;
+      }
+      scheduleAlertWindowFallback(alert);
+    }
   }
 
   function buildTimeoutRemovalPayload(event, config, actorId) {
@@ -1627,7 +1884,7 @@ function createAutomaticSpamDetectionManager({
   }
 
   async function recordAlert(message, config, messageAt, windowExpiresAt, protectedEvidence) {
-    await configStore.recordAutomaticSpamDetectionAlert({
+    const alert = await configStore.recordAutomaticSpamDetectionAlert({
       guildId: message.guild.id,
       userId: message.author.id,
       channelId: message.channelId,
@@ -1635,6 +1892,7 @@ function createAutomaticSpamDetectionManager({
       alertAt: messageAt,
       windowExpiresAt,
       protectedEvidence,
+      attachmentCount: message.attachments?.size || 0,
     });
     logger.info('Attachment spam alert recorded', {
       guildId: message.guild.id,
@@ -1655,12 +1913,15 @@ function createAutomaticSpamDetectionManager({
       channels: [message.channelId],
       windowStartedAt: messageAt,
       windowExpiresAt,
-      timeoutStatus: 'pending',
-      moderationAction: 'timeout',
+      status: 'alert',
+      startNewFlow: true,
+      timeoutStatus: null,
+      moderationAction: 'none',
       banStatus: 'none',
       aiVisionStatus: null,
     };
     queueFlowLogEdit(message.guild, config, auditEvent);
+    scheduleAlertWindowFallback(alert);
   }
 
   async function claimDetectionEvent({ message, danger, evidenceMessages }) {
@@ -2244,6 +2505,18 @@ function createAutomaticSpamDetectionManager({
     const guild = client.guilds.cache.get(event.guildId)
       || await client.guilds.fetch(event.guildId).catch(() => null);
     if (!guild) return event;
+    const alertState = await configStore.getAutomaticSpamDetectionUser(event.guildId, event.userId).catch(() => null);
+    const alertMatchesEvent = alertState?.lastAlertAt?.getTime() === event.windowStartedAt?.getTime();
+    const flowChannelId = event.flowLogChannelId
+      || (alertMatchesEvent ? alertState?.lastAlertFlowLogChannelId : null);
+    const flowMessageId = event.flowLogMessageId
+      || (alertMatchesEvent ? alertState?.lastAlertFlowLogMessageId : null);
+    if (flowChannelId && flowMessageId) {
+      activeFlowLogs.set(flowLogKey(event.guildId, event.userId, event.windowStartedAt, event.id), {
+        channelId: flowChannelId,
+        messageId: flowMessageId,
+      });
+    }
     const config = await loadRuntimeSafeConfig(guild);
     if (!config) {
       if (event.status === 'evaluating') {
@@ -2424,7 +2697,18 @@ function createAutomaticSpamDetectionManager({
         danger,
         evidenceMessages: [...session.events],
       });
-      if (!claim.event) throw new Error('Automatic Spam Detection window event could not be claimed.');
+      if (!claim.event) {
+        clearAlertWindowFallback(key, session.startedAtMs);
+        attachmentSessionByAuthor.set(key, {
+          startedAtMs: messageAtMs,
+          windowExpiresAtMs: messageAtMs + windowMs,
+          windowEventId: null,
+          events: [currentEvent],
+        });
+        await recordAlert(message, config, messageAt, new Date(messageAtMs + windowMs), protectedEvidence);
+        return;
+      }
+      clearAlertWindowFallback(key, session.startedAtMs);
       if (configChanged()) {
         if (claim.claimed) {
           await configStore.updateAutomaticSpamDetectionDecision(
@@ -3143,6 +3427,7 @@ function createAutomaticSpamDetectionManager({
     if (scheduledBanRunning) return;
     scheduledBanRunning = true;
     try {
+      await recoverPendingAutomaticSpamDetectionAlerts();
       await recoverPendingAutomaticSpamDetectionEvaluations();
       const events = await configStore.getDueAutomaticSpamDetectionBanEvents(25);
       for (const event of events) {
@@ -3166,6 +3451,10 @@ function createAutomaticSpamDetectionManager({
 
   async function runUserStateReset(guildId, userId, resetTask) {
     const key = authorKey(guildId, userId);
+    flowLogGenerationByAuthor.set(key, (flowLogGenerationByAuthor.get(key) || 0) + 1);
+    const flowOperation = flowLogQueueByGuild.get(guildId);
+    clearAlertWindowFallback(key);
+    clearActiveFlowLogsForAuthor(guildId, userId);
     const previous = messageQueueByAuthor.get(key) || Promise.resolve();
     const current = (async () => {
       attachmentSessionByAuthor.delete(key);
@@ -3192,6 +3481,7 @@ function createAutomaticSpamDetectionManager({
         for (const [eventId] of aiTasks) cancelledAiVisionEventIds.delete(eventId);
       };
       try {
+        if (flowOperation) await flowOperation.catch(() => null);
         await Promise.allSettled(activeAiTasks.map(([, value]) => value.task));
         if (cancelledQueuedTasks.length === 0) await previous.catch(() => null);
         const result = await resetTask();
@@ -3209,6 +3499,8 @@ function createAutomaticSpamDetectionManager({
         throw error;
       } finally {
         clearCancellations();
+        clearAlertWindowFallback(key);
+        clearActiveFlowLogsForAuthor(guildId, userId);
         attachmentSessionByAuthor.delete(key);
       }
     })();
@@ -3229,14 +3521,21 @@ function createAutomaticSpamDetectionManager({
 
   async function resetGuildRuntimeState(guildId) {
     invalidateGuildConfig(guildId);
+    flowLogGenerationByGuild.set(guildId, (flowLogGenerationByGuild.get(guildId) || 0) + 1);
     const prefix = `${guildId}:`;
     const auditOperation = automaticAuditQueueByGuild.get(guildId);
+    const flowOperation = flowLogQueueByGuild.get(guildId);
     const messageOperations = [...messageQueueByAuthor.entries()]
       .filter(([key]) => key.startsWith(prefix));
     for (const [eventId, timer] of eventMessageUpdateTimerByEvent.entries()) {
       if (timer.guildId !== guildId) continue;
       clearTimeout(timer);
       eventMessageUpdateTimerByEvent.delete(eventId);
+    }
+    for (const [key, entry] of alertWindowTimerByAuthor.entries()) {
+      if (!key.startsWith(prefix)) continue;
+      clearTimeout(entry.timer);
+      alertWindowTimerByAuthor.delete(key);
     }
     for (const [eventId, operation] of eventMessageQueueByEvent.entries()) {
       if (operation.guildId === guildId) eventMessageQueueByEvent.delete(eventId);
@@ -3253,9 +3552,13 @@ function createAutomaticSpamDetectionManager({
       ...aiTasks.map(([, value]) => value.task),
       ...messageOperations.map(([, operation]) => operation),
       ...(auditOperation ? [auditOperation] : []),
+      ...(flowOperation ? [flowOperation] : []),
     ]);
     if (automaticAuditQueueByGuild.get(guildId) === auditOperation) {
       automaticAuditQueueByGuild.delete(guildId);
+    }
+    if (flowLogQueueByGuild.get(guildId) === flowOperation) {
+      flowLogQueueByGuild.delete(guildId);
     }
     for (const [eventId] of aiTasks) cancelledAiVisionEventIds.delete(eventId);
     for (const [key, operation] of messageOperations) {
@@ -3263,6 +3566,9 @@ function createAutomaticSpamDetectionManager({
     }
     attachmentSessionByAuthor.forEach((_session, key) => {
       if (key.startsWith(prefix)) attachmentSessionByAuthor.delete(key);
+    });
+    activeFlowLogs.forEach((_reference, key) => {
+      if (key.startsWith(prefix)) activeFlowLogs.delete(key);
     });
   }
 

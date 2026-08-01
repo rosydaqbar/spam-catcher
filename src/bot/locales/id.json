@@ -263,6 +263,7 @@
     "logChannelCount": "{count} channel",
     "logIncidentResolved": "Insiden diselesaikan",
     "logAlertStarted": "Window alert dimulai",
+    "logNoSpamDetected": "Window berakhir — tidak ada spam terdeteksi",
     "logDangerConfirmed": "Bahaya dikonfirmasi",
     "logTimeoutApplied": "Timeout diterapkan",
     "logTimeoutAlreadyActive": "Timeout yang sudah aktif terdeteksi",

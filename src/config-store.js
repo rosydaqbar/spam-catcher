@@ -559,6 +559,13 @@ async function ensureAutomaticSpamDetectionTables() {
         last_alert_at TIMESTAMPTZ,
         last_alert_window_expires_at TIMESTAMPTZ,
         last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE,
+        last_alert_attachment_count INTEGER NOT NULL DEFAULT 0,
+        last_alert_flow_log_channel_id TEXT,
+        last_alert_flow_log_message_id TEXT,
+        last_alert_resolved_at TIMESTAMPTZ,
+        last_alert_outcome TEXT,
+        last_alert_flow_log_finalized_at TIMESTAMPTZ,
+        last_alert_tracking_version INTEGER NOT NULL DEFAULT 0,
         last_danger_at TIMESTAMPTZ,
         last_channel_id TEXT,
         last_message_id TEXT,
@@ -599,6 +606,8 @@ async function ensureAutomaticSpamDetectionTables() {
         appeal_message TEXT,
         review_channel_id TEXT,
         review_message_id TEXT,
+        flow_log_channel_id TEXT,
+        flow_log_message_id TEXT,
         decided_by TEXT,
         decision_error TEXT,
         evidence_deleted_by TEXT,
@@ -618,6 +627,27 @@ async function ensureAutomaticSpamDetectionTables() {
     'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_protected BOOLEAN NOT NULL DEFAULT FALSE'
   );
   await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_attachment_count INTEGER NOT NULL DEFAULT 0'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_flow_log_channel_id TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_flow_log_message_id TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_resolved_at TIMESTAMPTZ'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_outcome TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_flow_log_finalized_at TIMESTAMPTZ'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_users ADD COLUMN IF NOT EXISTS last_alert_tracking_version INTEGER NOT NULL DEFAULT 0'
+  );
+  await query(
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS window_claimed BOOLEAN NOT NULL DEFAULT FALSE'
   );
   await query(
@@ -625,6 +655,12 @@ async function ensureAutomaticSpamDetectionTables() {
   );
   await query(
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS followup_message_count INTEGER NOT NULL DEFAULT 0'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS flow_log_channel_id TEXT'
+  );
+  await query(
+    'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS flow_log_message_id TEXT'
   );
   await query(
     'ALTER TABLE automatic_spam_detection_events ADD COLUMN IF NOT EXISTS followup_attachment_count INTEGER NOT NULL DEFAULT 0'
@@ -889,6 +925,13 @@ function mapAutomaticSpamDetectionUser(row) {
     lastAlertAt: row.last_alert_at ? new Date(row.last_alert_at) : null,
     lastAlertWindowExpiresAt: row.last_alert_window_expires_at ? new Date(row.last_alert_window_expires_at) : null,
     lastAlertProtected: row.last_alert_protected === true,
+    lastAlertAttachmentCount: Number(row.last_alert_attachment_count || 0),
+    lastAlertFlowLogChannelId: row.last_alert_flow_log_channel_id || null,
+    lastAlertFlowLogMessageId: row.last_alert_flow_log_message_id || null,
+    lastAlertResolvedAt: row.last_alert_resolved_at ? new Date(row.last_alert_resolved_at) : null,
+    lastAlertOutcome: row.last_alert_outcome || null,
+    lastAlertFlowLogFinalizedAt: row.last_alert_flow_log_finalized_at ? new Date(row.last_alert_flow_log_finalized_at) : null,
+    lastAlertTrackingVersion: Number(row.last_alert_tracking_version || 0),
     lastDangerAt: row.last_danger_at ? new Date(row.last_danger_at) : null,
     lastChannelId: row.last_channel_id || null,
     lastMessageId: row.last_message_id || null,
@@ -943,6 +986,8 @@ function mapAutomaticSpamDetectionEvent(row) {
     aiVisionCheckedAt: row.ai_vision_checked_at ? new Date(row.ai_vision_checked_at) : null,
     reviewChannelId: row.review_channel_id || null,
     reviewMessageId: row.review_message_id || null,
+    flowLogChannelId: row.flow_log_channel_id || null,
+    flowLogMessageId: row.flow_log_message_id || null,
     decidedBy: row.decided_by || null,
     decisionError: row.decision_error || null,
     evidenceDeletedBy: row.evidence_deleted_by || null,
@@ -1315,6 +1360,13 @@ async function resetSpamCatcherSetup(guildId) {
             last_alert_at = NULL,
             last_alert_window_expires_at = NULL,
             last_alert_protected = FALSE,
+            last_alert_attachment_count = 0,
+            last_alert_flow_log_channel_id = NULL,
+            last_alert_flow_log_message_id = NULL,
+            last_alert_resolved_at = NULL,
+            last_alert_outcome = NULL,
+            last_alert_flow_log_finalized_at = NULL,
+            last_alert_tracking_version = 0,
             last_channel_id = NULL,
             last_message_id = NULL,
             updated_at = NOW()
@@ -1487,27 +1539,267 @@ async function recordAutomaticSpamDetectionAlert({
   alertAt,
   windowExpiresAt,
   protectedEvidence = false,
+  attachmentCount = 0,
 }) {
   await ensureAutomaticSpamDetectionTables();
   const res = await query(
     `
       INSERT INTO automatic_spam_detection_users (
         guild_id, user_id, spammer, spammer_count, last_alert_at, last_alert_window_expires_at,
-        last_alert_protected, last_channel_id, last_message_id, updated_at
+        last_alert_protected, last_alert_attachment_count, last_alert_tracking_version,
+        last_channel_id, last_message_id, updated_at
       )
-      VALUES ($1, $2, 0, 0, $3, $4, $5, $6, $7, NOW())
+      VALUES ($1, $2, 0, 0, $3, $4, $5, $6, 1, $7, $8, NOW())
       ON CONFLICT(guild_id, user_id) DO UPDATE SET
         last_alert_at = EXCLUDED.last_alert_at,
         last_alert_window_expires_at = EXCLUDED.last_alert_window_expires_at,
         last_alert_protected = EXCLUDED.last_alert_protected,
+        last_alert_attachment_count = EXCLUDED.last_alert_attachment_count,
+        last_alert_flow_log_channel_id = NULL,
+        last_alert_flow_log_message_id = NULL,
+        last_alert_resolved_at = NULL,
+        last_alert_outcome = NULL,
+        last_alert_flow_log_finalized_at = NULL,
+        last_alert_tracking_version = 1,
         last_channel_id = EXCLUDED.last_channel_id,
         last_message_id = EXCLUDED.last_message_id,
         updated_at = EXCLUDED.updated_at
       RETURNING *
     `,
-    [guildId, userId, alertAt || new Date(), windowExpiresAt || null, protectedEvidence === true, channelId, messageId || null]
+    [
+      guildId,
+      userId,
+      alertAt || new Date(),
+      windowExpiresAt || null,
+      protectedEvidence === true,
+      Math.max(0, Number(attachmentCount) || 0),
+      channelId,
+      messageId || null,
+    ]
   );
   return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function withAutomaticSpamDetectionFlowLogLock(guildId, userId, windowStartedAt, work) {
+  await ensureAutomaticSpamDetectionTables();
+  const db = await getPool();
+  const client = await db.connect();
+  let locked = false;
+  const lockKey = `automatic-spam-flow:${guildId}:${userId}:${new Date(windowStartedAt).toISOString()}`;
+  try {
+    await client.query(
+      'SELECT pg_advisory_lock(hashtextextended($1, 0))',
+      [lockKey]
+    );
+    locked = true;
+    const res = await client.query(
+      'SELECT * FROM automatic_spam_detection_users WHERE guild_id = $1 AND user_id = $2',
+      [guildId, userId]
+    );
+    return await work(mapAutomaticSpamDetectionUser(res.rows[0]), client);
+  } finally {
+    if (locked) {
+      await client.query(
+        'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+        [lockKey]
+      ).catch(() => null);
+    }
+    client.release();
+  }
+}
+
+async function saveAutomaticSpamDetectionAlertFlowLog({
+  guildId,
+  userId,
+  alertAt,
+  channelId,
+  messageId,
+}, dbClient = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const save = async (client) => {
+    const res = await client.query(
+      `
+        UPDATE automatic_spam_detection_users
+        SET last_alert_flow_log_channel_id = $4,
+            last_alert_flow_log_message_id = $5,
+            updated_at = NOW()
+        WHERE guild_id = $1
+          AND user_id = $2
+          AND last_alert_at = $3
+          AND last_alert_tracking_version = 1
+        RETURNING *
+      `,
+      [guildId, userId, alertAt, channelId, messageId]
+    );
+    if (res.rowCount > 0) {
+      await client.query(
+        `
+          UPDATE automatic_spam_detection_events
+          SET flow_log_channel_id = COALESCE(flow_log_channel_id, $4),
+              flow_log_message_id = COALESCE(flow_log_message_id, $5),
+              updated_at = NOW()
+          WHERE guild_id = $1
+            AND user_id = $2
+            AND window_started_at = $3
+            AND window_claimed = TRUE
+        `,
+        [guildId, userId, alertAt, channelId, messageId]
+      );
+    }
+    return mapAutomaticSpamDetectionUser(res.rows[0]);
+  };
+  if (dbClient) return save(dbClient);
+  return runTransactionWithRetry('Automatic Spam Detection alert flow-log reference', save);
+}
+
+async function saveAutomaticSpamDetectionEventFlowLog(id, channelId, messageId, dbClient = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE automatic_spam_detection_events
+      SET flow_log_channel_id = $2,
+          flow_log_message_id = $3,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `,
+    [id, channelId, messageId]
+  );
+  return mapAutomaticSpamDetectionEvent(res.rows[0]);
+}
+
+async function resolveAutomaticSpamDetectionAlertWindow({ guildId, userId, alertAt }) {
+  await ensureAutomaticSpamDetectionTables();
+  return runTransactionWithRetry('Automatic Spam Detection alert-window resolution', async (client) => {
+    const locked = await client.query(
+      `
+        SELECT *
+        FROM automatic_spam_detection_users
+        WHERE guild_id = $1 AND user_id = $2
+        FOR UPDATE
+      `,
+      [guildId, userId]
+    );
+    const row = locked.rows[0];
+    if (
+      !row
+      || Number(row.last_alert_tracking_version || 0) !== 1
+      || !row.last_alert_at
+      || new Date(row.last_alert_at).getTime() !== new Date(alertAt).getTime()
+      || row.last_alert_outcome === 'danger'
+    ) {
+      return null;
+    }
+    if (row.last_alert_outcome === 'no_spam') {
+      if (row.last_alert_flow_log_finalized_at) return null;
+      const retry = await client.query(
+        `
+          UPDATE automatic_spam_detection_users
+          SET updated_at = NOW()
+          WHERE guild_id = $1 AND user_id = $2
+          RETURNING *
+        `,
+        [guildId, userId]
+      );
+      return mapAutomaticSpamDetectionUser(retry.rows[0]);
+    }
+
+    const claimed = await client.query(
+      `
+        SELECT 1
+        FROM automatic_spam_detection_events
+        WHERE guild_id = $1
+          AND user_id = $2
+          AND window_started_at = $3
+          AND window_claimed = TRUE
+        LIMIT 1
+      `,
+      [guildId, userId, alertAt]
+    );
+    if (claimed.rowCount > 0) {
+      await client.query(
+        `
+          UPDATE automatic_spam_detection_users
+          SET last_alert_resolved_at = COALESCE(last_alert_resolved_at, NOW()),
+              last_alert_outcome = 'danger',
+              updated_at = NOW()
+          WHERE guild_id = $1 AND user_id = $2
+        `,
+        [guildId, userId]
+      );
+      return null;
+    }
+
+    const resolved = await client.query(
+      `
+        UPDATE automatic_spam_detection_users
+        SET last_alert_resolved_at = NOW(),
+            last_alert_outcome = 'no_spam',
+            updated_at = NOW()
+        WHERE guild_id = $1 AND user_id = $2
+        RETURNING *
+      `,
+      [guildId, userId]
+    );
+    return mapAutomaticSpamDetectionUser(resolved.rows[0]);
+  });
+}
+
+async function markAutomaticSpamDetectionAlertFlowLogFinalized({
+  guildId,
+  userId,
+  alertAt,
+  outcome = 'no_spam',
+}, dbClient = null) {
+  await ensureAutomaticSpamDetectionTables();
+  const execute = dbClient ? dbClient.query.bind(dbClient) : query;
+  const res = await execute(
+    `
+      UPDATE automatic_spam_detection_users
+      SET last_alert_flow_log_finalized_at = NOW(),
+          updated_at = NOW()
+      WHERE guild_id = $1
+        AND user_id = $2
+        AND last_alert_at = $3
+        AND last_alert_outcome = $4
+        AND last_alert_flow_log_finalized_at IS NULL
+      RETURNING *
+    `,
+    [guildId, userId, alertAt, outcome]
+  );
+  return mapAutomaticSpamDetectionUser(res.rows[0]);
+}
+
+async function getPendingAutomaticSpamDetectionAlerts(limit = 100, guildIds = []) {
+  await ensureAutomaticSpamDetectionTables();
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+  const allowedGuildIds = Array.isArray(guildIds) ? guildIds.filter(Boolean) : [];
+  const res = await query(
+    `
+      SELECT *
+      FROM automatic_spam_detection_users
+      WHERE last_alert_at IS NOT NULL
+        AND last_alert_window_expires_at IS NOT NULL
+        AND last_alert_tracking_version = 1
+        AND (CARDINALITY($2::text[]) = 0 OR guild_id = ANY($2::text[]))
+        AND (
+          last_alert_resolved_at IS NULL
+          OR (
+            last_alert_outcome = 'no_spam'
+            AND last_alert_flow_log_finalized_at IS NULL
+          )
+          OR (
+            last_alert_outcome = 'danger'
+            AND last_alert_flow_log_finalized_at IS NULL
+          )
+        )
+      ORDER BY (last_alert_window_expires_at <= NOW()) DESC, updated_at ASC
+      LIMIT $1
+    `,
+    [safeLimit, allowedGuildIds]
+  );
+  return res.rows.map(mapAutomaticSpamDetectionUser);
 }
 
 async function markAutomaticSpamDetectionDangerUser({ guildId, userId, channelId, messageId, dangerAt }) {
@@ -1667,18 +1959,51 @@ async function claimAutomaticSpamDetectionWindowEvent({
     0
   );
   return runTransactionWithRetry('Automatic Spam Detection event claim', async (client) => {
+    const loadExisting = () => client.query(
+      `
+        SELECT *
+        FROM automatic_spam_detection_events
+        WHERE guild_id = $1
+          AND user_id = $2
+          AND window_started_at = $3
+          AND window_claimed = TRUE
+        LIMIT 1
+      `,
+      [guildId, userId, windowStartedAt]
+    );
+    const lockedAlert = await client.query(
+      `
+        SELECT *
+        FROM automatic_spam_detection_users
+        WHERE guild_id = $1 AND user_id = $2
+        FOR UPDATE
+      `,
+      [guildId, userId]
+    );
+    const alertRow = lockedAlert.rows[0];
+    const matchingAlert = alertRow?.last_alert_at
+      && new Date(alertRow.last_alert_at).getTime() === new Date(windowStartedAt).getTime();
+    if (!matchingAlert || alertRow.last_alert_outcome === 'danger') {
+      const existing = await loadExisting();
+      return {
+        event: mapAutomaticSpamDetectionEvent(existing.rows[0]),
+        claimed: false,
+        expired: existing.rowCount === 0,
+      };
+    }
+
     const res = await client.query(
       `
         INSERT INTO automatic_spam_detection_events (
           guild_id, user_id, source_channel_id, source_message_id,
           attachment_count, reason, channels_json, window_started_at,
           window_expires_at, moderation_action, ban_status, ban_after,
-          banned_at, status, window_claimed, followup_message_count,
-          followup_attachment_count, updated_at
+          banned_at, flow_log_channel_id, flow_log_message_id, status,
+          window_claimed, followup_message_count, followup_attachment_count, updated_at
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9,
-          $10, $11, $12, $13, 'evaluating', TRUE, $14, $15, NOW()
+          $10, $11, $12, $13, $14, $15, 'evaluating', TRUE, $16, $17, NOW()
         )
         ON CONFLICT (guild_id, user_id, window_started_at) WHERE window_claimed = TRUE
         DO NOTHING
@@ -1698,9 +2023,24 @@ async function claimAutomaticSpamDetectionWindowEvent({
         banStatus || 'none',
         banAfter || null,
         bannedAt || null,
+        alertRow.last_alert_flow_log_channel_id || null,
+        alertRow.last_alert_flow_log_message_id || null,
         references.length,
         initialAttachmentCount,
       ]
+    );
+    await client.query(
+      `
+        UPDATE automatic_spam_detection_users
+        SET last_alert_resolved_at = COALESCE(last_alert_resolved_at, NOW()),
+            last_alert_outcome = 'danger',
+            last_alert_flow_log_finalized_at = NULL,
+            updated_at = NOW()
+        WHERE guild_id = $1
+          AND user_id = $2
+          AND last_alert_at = $3
+      `,
+      [guildId, userId, windowStartedAt]
     );
     if (res.rows[0]) {
       for (const reference of references) {
@@ -1718,18 +2058,7 @@ async function claimAutomaticSpamDetectionWindowEvent({
       return { event: mapAutomaticSpamDetectionEvent(res.rows[0]), claimed: true };
     }
 
-    const existing = await client.query(
-      `
-        SELECT *
-        FROM automatic_spam_detection_events
-        WHERE guild_id = $1
-          AND user_id = $2
-          AND window_started_at = $3
-          AND window_claimed = TRUE
-        LIMIT 1
-      `,
-      [guildId, userId, windowStartedAt]
-    );
+    const existing = await loadExisting();
     return { event: mapAutomaticSpamDetectionEvent(existing.rows[0]), claimed: false };
   });
 }
@@ -2480,6 +2809,13 @@ async function resetUserDatabaseState(guildId, userId, scope, decidedBy) {
             last_alert_at = NULL,
             last_alert_window_expires_at = NULL,
             last_alert_protected = FALSE,
+            last_alert_attachment_count = 0,
+            last_alert_flow_log_channel_id = NULL,
+            last_alert_flow_log_message_id = NULL,
+            last_alert_resolved_at = NULL,
+            last_alert_outcome = NULL,
+            last_alert_flow_log_finalized_at = NULL,
+            last_alert_tracking_version = 0,
             last_channel_id = NULL,
             last_message_id = NULL,
             updated_at = NOW()
@@ -2613,6 +2949,7 @@ module.exports = {
   getSpamCatcherConfig,
   withGuildConfigLock,
   withAutomaticSpamDetectionEventLock,
+  withAutomaticSpamDetectionFlowLogLock,
   saveSpamCatcherConfig,
   setGuildAiVisionDailyLimit,
   listSpamCatcherConfigs,
@@ -2632,6 +2969,11 @@ module.exports = {
   getSpamCatcherNoticeMessage,
   saveSpamCatcherNoticeMessages,
   recordAutomaticSpamDetectionAlert,
+  saveAutomaticSpamDetectionAlertFlowLog,
+  saveAutomaticSpamDetectionEventFlowLog,
+  resolveAutomaticSpamDetectionAlertWindow,
+  markAutomaticSpamDetectionAlertFlowLogFinalized,
+  getPendingAutomaticSpamDetectionAlerts,
   markAutomaticSpamDetectionDangerUser,
   confirmAutomaticSpamDetectionDanger,
   resetAutomaticSpamDetectionSpammer,

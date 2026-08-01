@@ -231,6 +231,7 @@ You should see these tables:
 - `ai_vision_daily_limit_bypass_guilds`
 
 Completed incident-card evidence deletion stores its Administrator and completion time on `automatic_spam_detection_events`.
+Pending Automatic Detection alert windows store their expiry and editable log-message reference on `automatic_spam_detection_users`; confirmed windows copy the reference to `automatic_spam_detection_events`. This lets the bot recover no-spam and danger progress after a restart.
 
 ### 7. Add PostgreSQL To `.env`
 

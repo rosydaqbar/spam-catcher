@@ -48,6 +48,15 @@ const EVENT_MESSAGE_UPDATE_DEBOUNCE_MS = 750;
 const EVENT_MESSAGE_UPDATE_RETRY_DELAYS_MS = [1500, 5000, 15_000];
 const ALERT_WINDOW_FALLBACK_GRACE_MS = 1000;
 
+async function getHighestRoleLine(guild, userId, t) {
+  if (!guild) return null;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) return null;
+  const highest = member.roles.highest;
+  if (!highest || highest.id === guild.id) return null;
+  return `**${t('automatic.highestRole')}:** <@&${highest.id}> (\`${highest.id}\`)`;
+}
+
 function createAutomaticSpamDetectionManager({
   client,
   configStore,
@@ -368,33 +377,17 @@ function createAutomaticSpamDetectionManager({
     ].filter(Boolean);
   }
 
-  function aggregateEvidenceLines(event, t) {
-    const channels = event.channels.length > 0 ? event.channels : [event.sourceChannelId];
-    const visibleChannels = channels.slice(0, 15);
-    const channelList = [
-      visibleChannels.map((channelId) => `<#${channelId}>`).join(', '),
-      channels.length > visibleChannels.length
-        ? t('automatic.andMoreChannels', { count: channels.length - visibleChannels.length })
-        : null,
-    ].filter(Boolean).join(' ');
-    const latestFollowupUrl = event.lastFollowupChannelId && event.lastFollowupMessageId
-      ? `https://discord.com/channels/${event.guildId}/${event.lastFollowupChannelId}/${event.lastFollowupMessageId}`
-      : null;
-    return [
-      `**${t('automatic.channelsInWindow')}:** ${channelList}`,
-      event.lastFollowupAt && event.lastFollowupChannelId
-        ? `**${t('automatic.latestFollowup')}:** <#${event.lastFollowupChannelId}> · \`${event.lastFollowupAttachmentCount || 0}\` ${t('automatic.attachments')} · ${timestamp(event.lastFollowupAt)}${latestFollowupUrl ? ` · [${t('automatic.openMessage')}](${latestFollowupUrl})` : ''}`
-        : null,
-    ].filter(Boolean);
-  }
-
-  function buildDangerPayload(event, userState, config = {}, options = {}) {
+  async function buildDangerPayload(event, userState, config = {}, options = {}) {
     const t = createTranslator(config.language);
     const successfulResolution = event.status === 'timeout_removed' || event.status === 'banned';
     const compact = options.forceDetailed !== true && successfulResolution;
     const includeActions = options.includeActions !== false;
     const messageUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}/${event.sourceMessageId}`;
     const channelUrl = `https://discord.com/channels/${event.guildId}/${event.sourceChannelId}`;
+    const [highestRoleLine, evidenceRows] = await Promise.all([
+      getHighestRoleLine(options.guild, event.userId, t),
+      compact ? Promise.resolve([]) : configStore.getAutomaticSpamDetectionEvidenceMessages(event.id).catch(() => []),
+    ]);
     const timeoutLine = event.moderationAction === 'ban_immediate'
       ? `**${t('automatic.timeout')}:** \`${t('automatic.notApplicable')}\``
       : event.timeoutStatus === 'applied'
@@ -438,8 +431,9 @@ function createAutomaticSpamDetectionManager({
       .addSectionComponents(sectionWithLink([
         `### ${t('automatic.incident')}`,
         `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`,
+        highestRoleLine,
         `**${t('automatic.reason')}:** \`${reasonText(event.reason, t)}\``,
-      ].join('\n'), t('automatic.openMessage'), messageUrl));
+      ].filter(Boolean).join('\n'), t('automatic.openMessage'), messageUrl));
 
     if (compact) {
       container
@@ -467,9 +461,14 @@ function createAutomaticSpamDetectionManager({
     container
       .addSeparatorComponents(divider())
       .addSectionComponents(sectionWithLink([
-         `### ${t('automatic.evidence')}`,
-         `**${t('automatic.sourceChannel')}:** <#${event.sourceChannelId}>`,
-         ...aggregateEvidenceLines(event, t),
+        `### ${t('automatic.evidence')}`,
+        `**${t('automatic.whereStarted')}:** <#${event.sourceChannelId}> · [${t('automatic.openMessage')}](${messageUrl})`,
+        `**${t('automatic.evidenceFound', { count: evidenceRows.length })}:**`,
+        ...evidenceRows.slice(0, 10).map((item, index) => {
+          const url = `https://discord.com/channels/${event.guildId}/${item.channelId}/${item.messageId}`;
+          return `${index + 1}. <#${item.channelId}> · [${t('automatic.openMessage')}](${url})${item.deletedAt ? ` ${t('automatic.evidenceItemDeleted')}` : ''}`;
+        }),
+        evidenceRows.length > 10 ? t('automatic.andMoreEvidence', { count: evidenceRows.length - 10 }) : null,
        ].filter(Boolean).join('\n'), t('automatic.openChannel'), channelUrl))
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent([
@@ -692,8 +691,9 @@ function createAutomaticSpamDetectionManager({
     }
   }
 
-  function compactAutomaticLogPayload(event, config, action, { actorId = null, details = [] } = {}) {
+  async function compactAutomaticLogPayload(event, config, action, { actorId = null, details = [] } = {}, guild = null) {
     const t = createTranslator(config.language);
+    const highestRoleLine = await getHighestRoleLine(guild, event.userId, t);
 
     return {
       flags: MessageFlags.IsComponentsV2,
@@ -706,6 +706,7 @@ function createAutomaticSpamDetectionManager({
               `**${t('automatic.logAction')}:** \`${action}\``,
               event.id ? `**${t('automatic.eventId')}:** \`${event.id}\`` : null,
               event.userId ? `**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)` : null,
+              highestRoleLine,
               actorId ? `**${t('automatic.logActor')}:** <@${actorId}> (\`${actorId}\`)` : null,
               ...details,
               `-# ${timestamp(new Date(), 'F')}`,
@@ -716,8 +717,9 @@ function createAutomaticSpamDetectionManager({
     };
   }
 
-  function buildFlowLogPayload(event, config) {
+  async function buildFlowLogPayload(event, config, guild = null) {
     const t = createTranslator(config.language);
+    const highestRoleLine = await getHighestRoleLine(guild, event.userId, t);
     const lines = [];
     const steps = [];
     let titleEmoji = '\u{23F3}';
@@ -733,6 +735,7 @@ function createAutomaticSpamDetectionManager({
 
     if (event.userId) {
       lines.push(`**${t('automatic.user')}:** <@${event.userId}> (\`${event.userId}\`)`);
+      if (highestRoleLine) lines.push(highestRoleLine);
     }
     if (event.id) {
       lines.push(`**${t('automatic.eventId')}:** \`${event.id}\``);
@@ -869,7 +872,7 @@ function createAutomaticSpamDetectionManager({
     const current = previous.catch(() => null).then(async () => {
       const logChannel = await getLogChannel(guild, config);
       if (!logChannel) return null;
-      return logChannel.send(compactAutomaticLogPayload(event, config, action, options)).catch((error) => {
+      return logChannel.send(await compactAutomaticLogPayload(event, config, action, options, guild)).catch((error) => {
         logger.error('Failed to send Automatic Spam Detection audit record', {
           guildId: guild.id,
           eventId: event.id,
@@ -930,7 +933,7 @@ function createAutomaticSpamDetectionManager({
 
     if (targetMessage) {
       try {
-        await targetMessage.edit(buildFlowLogPayload(event, config));
+        await targetMessage.edit(await buildFlowLogPayload(event, config, guild));
         await rememberFlowLog(event, targetMessage, dbClient);
         return targetMessage;
       } catch {
@@ -940,7 +943,7 @@ function createAutomaticSpamDetectionManager({
 
     const logChannel = await getLogChannel(guild, config);
     if (!logChannel) return null;
-    const message = await logChannel.send(buildFlowLogPayload(event, config)).catch((error) => {
+    const message = await logChannel.send(await buildFlowLogPayload(event, config, guild)).catch((error) => {
       logger.error('Failed to send Automatic Spam Detection flow log', {
         guildId: guild.id,
         eventId: event?.id || null,
@@ -1541,7 +1544,7 @@ function createAutomaticSpamDetectionManager({
       return null;
     }
 
-    const message = await reviewChannel.send(buildDangerPayload(event, userState, config)).catch((error) => {
+    const message = await reviewChannel.send(await buildDangerPayload(event, userState, config, { guild })).catch((error) => {
       logger.error('Failed to send Automatic Spam Detection danger card', {
         guildId: guild.id,
         eventId: event.id,
@@ -1597,7 +1600,7 @@ function createAutomaticSpamDetectionManager({
     ) {
       const reviewChannel = await getReviewChannel(guild, config);
       if (!reviewChannel) return null;
-      const replacement = await reviewChannel.send(buildDangerPayload(event, userState, config)).catch((error) => {
+      const replacement = await reviewChannel.send(await buildDangerPayload(event, userState, config, { guild })).catch((error) => {
         logger.error('Failed to move legacy Automatic Detection card to Review Channel', {
           guildId: event.guildId,
           eventId: event.id,
@@ -1632,7 +1635,7 @@ function createAutomaticSpamDetectionManager({
       return replacement;
     }
 
-    return message.edit(buildDangerPayload(event, userState, config)).catch((error) => {
+    return message.edit(await buildDangerPayload(event, userState, config, { guild })).catch((error) => {
       logger.error('Failed to update Automatic Spam Detection danger card', {
         guildId: event.guildId,
         eventId: event.id,
@@ -3046,10 +3049,11 @@ function createAutomaticSpamDetectionManager({
     queueAutomaticAudit(interaction.guild, config, event, t('automatic.logDetailsViewed'), {
       actorId: interaction.user.id,
     });
-    await interaction.reply(buildDangerPayload(event, userState, config, {
+    await interaction.reply(await buildDangerPayload(event, userState, config, {
       forceDetailed: true,
       includeActions: false,
       ephemeral: true,
+      guild: interaction.guild,
     }));
   }
 

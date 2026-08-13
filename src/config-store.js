@@ -264,6 +264,7 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   aiVisionTriggerWords: DEFAULT_AI_VISION_TRIGGER_WORDS,
   timezone: DEFAULT_TIMEZONE,
   language: DEFAULT_LANGUAGE,
+  setupUserId: null,
 };
 
 function isTransientPostgresError(error) {
@@ -441,6 +442,9 @@ function normalizeSpamCatcherConfig(value) {
     aiVisionTriggerWords: normalizeAiVisionTriggerWords(source.aiVisionTriggerWords),
     timezone: normalizeTimezone(source.timezone),
     language: normalizeLanguage(source.language),
+    setupUserId: typeof source.setupUserId === 'string' && /^\d{17,20}$/.test(source.setupUserId)
+      ? source.setupUserId
+      : null,
   };
 }
 

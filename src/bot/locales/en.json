@@ -213,6 +213,13 @@
     "helpDescription": "Running into issues or want to start over? Join our support server and we'll get you sorted.",
     "supportButton": "Join Support Server"
   },
+  "helpNotice": {
+    "title": "❓ Need Help with Spam Catcher?",
+    "body": "You haven't finished setting up Spam Catcher in **{guild}** (`{guildId}`). Still missing: **{missing}**. Need help? Join the support server:",
+    "missingChannels": "required channels",
+    "missingAutoDetection": "auto-detection",
+    "joinButton": "Join Support"
+  },
   "superNotice": {
     "guildAddedTitle": "🎉 Spam Catcher Added",
     "guildAddedBody": "A guild just added Spam Catcher: **{guild}** (`{guildId}`) — setup completed by **{user}** (`{userId}`).",

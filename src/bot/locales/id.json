@@ -213,6 +213,13 @@
     "helpDescription": "Ada masalah atau ingin mengatur ulang? Bergabunglah dengan server support kami, kami akan bantu.",
     "supportButton": "Gabung ke Server Support"
   },
+  "helpNotice": {
+    "title": "❓ Perlu Bantuan dengan Spam Catcher?",
+    "body": "Kamu belum selesai mengatur Spam Catcher di **{guild}** (`{guildId}`). Yang masih kurang: **{missing}**. Perlu bantuan? Gabung ke server dukungan:",
+    "missingChannels": "kanal wajib",
+    "missingAutoDetection": "deteksi otomatis",
+    "joinButton": "Gabung Dukungan"
+  },
   "superNotice": {
     "guildAddedTitle": "🎉 Spam Catcher Ditambahkan",
     "guildAddedBody": "Sebuah guild baru saja menambahkan Spam Catcher: **{guild}** (`{guildId}`) — setup diselesaikan oleh **{user}** (`{userId}`).",

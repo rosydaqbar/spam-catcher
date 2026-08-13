@@ -1,5 +1,6 @@
 const {
   ActionRowBuilder,
+  AuditLogEvent,
   ApplicationIntegrationType,
   ButtonBuilder,
   ButtonStyle,
@@ -9,6 +10,7 @@ const {
 } = require('discord.js');
 const { ContainerBuilder, TextDisplayBuilder } = require('@discordjs/builders');
 const { parseAiVisionDailyLimitBypassGuildIds, parseSuperAdminUserIds } = require('./env');
+const { createTranslator } = require('./i18n');
 const { createLogger } = require('../lib/logger');
 
 const COMMAND_NAME = 'spam-admin';
@@ -135,6 +137,12 @@ function createSuperAdminCommandManager({
     return `${byType.year}-${byType.month}-${byType.day}`;
   }
 
+  async function fetchInviter(guild) {
+    const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.BotAdd, limit: 1 }).catch(() => null);
+    const entry = logs && logs.entries.first();
+    return entry && entry.executor ? entry.executor : null;
+  }
+
   async function guildsPayload(requesterId, requestedPage = 0) {
     const guilds = [...client.guilds.cache.values()]
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
@@ -142,9 +150,14 @@ function createSuperAdminCommandManager({
     const page = Math.max(0, Math.min(totalPages - 1, Number(requestedPage) || 0));
     const visible = guilds.slice(page * GUILD_PAGE_SIZE, (page + 1) * GUILD_PAGE_SIZE);
     const configs = new Map();
+    const inviters = new Map();
     await Promise.all(visible.map(async (guild) => {
-      const config = await configStore.getSpamCatcherConfig(guild.id).catch(() => null);
+      const [config, inviter] = await Promise.all([
+        configStore.getSpamCatcherConfig(guild.id).catch(() => null),
+        fetchInviter(guild),
+      ]);
       configs.set(guild.id, config);
+      inviters.set(guild.id, inviter);
     }));
     const { isSetupComplete } = require('./setup-command');
     function setupStatusLine(config) {
@@ -160,19 +173,41 @@ function createSuperAdminCommandManager({
           const position = page * GUILD_PAGE_SIZE + index + 1;
           const config = configs.get(guild.id);
           const status = setupStatusLine(config);
-          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members\n   ${status}`;
+          const inviter = inviters.get(guild.id);
+          const inviterLine = inviter ? `\n   · invited by ${safeName(inviter.username)} (\`${inviter.id}\`)` : '';
+          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members\n   ${status}${inviterLine}`;
         })
       : ['No guilds are currently connected.'];
+    const incomplete = visible.filter((guild) => {
+      const config = configs.get(guild.id);
+      return config !== null && !isSetupComplete(config);
+    });
+    const text = [
+      `## Connected Guilds`,
+      `Page ${page + 1}/${totalPages} · ${guilds.length} total`,
+      '',
+      ...lines,
+    ].join('\n');
     const payload = {
-      content: [
-        `## Connected Guilds`,
-        `Page ${page + 1}/${totalPages} · ${guilds.length} total`,
-        '',
-        ...lines,
-      ].join('\n'),
-      components: [],
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder().addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(text)
+        ),
+      ],
       allowedMentions: { parse: [] },
     };
+    for (let i = 0; i < incomplete.length; i += 5) {
+      const row = new ActionRowBuilder().addComponents(
+        incomplete.slice(i, i + 5).map((guild) => (
+          new ButtonBuilder()
+            .setCustomId(`${BUTTON_PREFIX}:help:${guild.id}:${requesterId}`)
+            .setLabel(`Send Help · ${safeName(guild.name).slice(0, 60)}`)
+            .setStyle(ButtonStyle.Secondary)
+        ))
+      );
+      payload.components.push(row);
+    }
     if (totalPages > 1) {
       payload.components.push(
         new ActionRowBuilder().addComponents(
@@ -190,6 +225,51 @@ function createSuperAdminCommandManager({
       );
     }
     return payload;
+  }
+
+  async function resolveHelpRecipient(guild, config) {
+    const inviter = await fetchInviter(guild);
+    if (inviter) return inviter;
+    if (config && config.setupUserId) {
+      try {
+        return await client.users.fetch(config.setupUserId);
+      } catch {
+        // Ignore unavailable setup users.
+      }
+    }
+    return null;
+  }
+
+  function buildHelpDmPayload(t, { guild, guildId, config }) {
+    const missing = [
+      config.requiredChannelsSet !== 1 ? t('helpNotice.missingChannels') : null,
+      config.automaticSpamDetectionEnabled !== true ? t('helpNotice.missingAutoDetection') : null,
+    ].filter(Boolean).join(', ');
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [
+        new ContainerBuilder().addTextDisplayComponents(
+          new TextDisplayBuilder().setContent([
+            `## ${t('helpNotice.title')}`,
+            t('helpNotice.body', { guild: safeName(guild.name), guildId: guild.id, missing }),
+          ].join('\n'))
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel(t('helpNotice.joinButton')).setStyle(ButtonStyle.Link).setURL('https://discord.gg/TG55gbpvyQ')
+        ),
+      ],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  function buildHelpFeedbackPayload(text) {
+    return {
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+      components: [
+        new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent(text)),
+      ],
+      allowedMentions: { parse: [] },
+    };
   }
 
   async function bypassesPayload(requesterId, requestedPage = 0) {
@@ -477,6 +557,30 @@ function createSuperAdminCommandManager({
               error: String(editError),
             });
           });
+        }
+        return true;
+      }
+
+      if (parts[1] === 'help') {
+        const guildId = parts[2];
+        const requesterId = parts[3];
+        if (requesterId !== interaction.user.id) throw new Error('This help button belongs to another Super Admin.');
+        await interaction.deferUpdate();
+        try {
+          const guild = connectedGuild(guildId);
+          const config = await configStore.getSpamCatcherConfig(guildId).catch(() => null);
+          const recipient = await resolveHelpRecipient(guild, config);
+          if (!recipient) {
+            await interaction.followUp(buildHelpFeedbackPayload(`⚠️ Couldn't determine who to send help to for **${safeName(guild.name)}** (\`${guildId}\`).`));
+            return true;
+          }
+          const t = createTranslator(config && config.language ? config.language : 'en');
+          await recipient.send(buildHelpDmPayload(t, { guild, guildId: guild.id, config }));
+          logger.info('Sent setup help DM to guild inviter/setup user', { guildId, recipientId: recipient.id, adminId: interaction.user.id });
+          await interaction.followUp(buildHelpFeedbackPayload(`✅ Help DM sent to **${safeName(recipient.username)}** (\`${recipient.id}\`).`));
+        } catch (error) {
+          logger.warn('Failed to send setup help DM', { guildId, adminId: interaction.user.id, error: String(error) });
+          await interaction.followUp(buildHelpFeedbackPayload(`⚠️ Couldn't send the help DM: ${String(error.message || error).slice(0, 500)}`)).catch(() => {});
         }
         return true;
       }

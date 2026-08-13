@@ -243,6 +243,11 @@ function createSetupCommandManager({
       guildId: interaction.guildId,
       error: String(error),
     }));
+    runGuildConfigOperation(interaction.guildId, async () => {
+      const next = { ...saved, setupUserId: interaction.user.id };
+      await configStore.saveSpamCatcherConfig(interaction.guildId, next);
+      invalidateGuildConfig(interaction.guildId);
+    }).catch((error) => logger.warn('Failed to persist setupUserId', { guildId: interaction.guildId, error: String(error) }));
   }
 
   function isAdmin(interaction) {

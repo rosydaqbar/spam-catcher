@@ -2942,6 +2942,7 @@ async function close() {
 }
 
 module.exports = {
+  DEFAULT_AI_VISION_DAILY_LIMIT,
   DEFAULT_SPAM_CATCHER_CONFIG,
   normalizeSpamCatcherConfig,
   normalizeTimezone,

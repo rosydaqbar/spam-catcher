@@ -31,6 +31,7 @@ const {
 const { createTranslator } = require('./i18n');
 const { createModerationWorkflow, planModerationPolicy } = require('./moderation-workflow');
 const { createLogger } = require('../lib/logger');
+const { sendLimitUsedNotice } = require('./super-admin-notice');
 
 const BAN_PREFIX = 'autospam_ban';
 const BAN_CONFIRM_PREFIX = 'autospam_ban_confirm';
@@ -2305,6 +2306,18 @@ function createAutomaticSpamDetectionManager({
           timezone: config.timezone,
           limit: usage?.limit || config.aiVisionDailyLimit,
         });
+        sendLimitUsedNotice(client, {
+          guildId: message.guild.id,
+          guildName: message.guild.name,
+          limit: usage.limit || config.aiVisionDailyLimit,
+          adminId: undefined,
+          usageDate: reservedUsageDate,
+          config,
+        }).catch((error) => logger.warn('Failed to send AI Verdict limit-used notice', {
+          guildId: message.guild.id,
+          usageDate: reservedUsageDate,
+          error: safeError(error),
+        }));
         return updatedEvent;
       }
 

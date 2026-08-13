@@ -4,8 +4,10 @@ const {
   ButtonBuilder,
   ButtonStyle,
   InteractionContextType,
+  MessageFlags,
   SlashCommandBuilder,
 } = require('discord.js');
+const { ContainerBuilder, TextDisplayBuilder } = require('@discordjs/builders');
 const { parseAiVisionDailyLimitBypassGuildIds, parseSuperAdminUserIds } = require('./env');
 const { createLogger } = require('../lib/logger');
 
@@ -402,6 +404,67 @@ function createSuperAdminCommandManager({
     const parts = interaction.customId.split(':');
 
     try {
+      if (parts[1] === 'resetlimit') {
+        const guildId = parts[2];
+        try {
+          await interaction.deferUpdate();
+          const requesterId = parts[3];
+          if (requesterId && requesterId !== interaction.user.id) throw new Error('This reset belongs to another Super Admin.');
+          const guild = connectedGuild(guildId);
+          const config = await configStore.getSpamCatcherConfig(guildId);
+          const usageDate = guildLocalDate(new Date(), config.timezone);
+          await runGuildConfigOperation(guildId, async () => {
+            await configStore.setGuildAiVisionDailyLimit(guildId, configStore.DEFAULT_AI_VISION_DAILY_LIMIT);
+            await configStore.resetAiVisionDailyUsage(guildId, usageDate);
+            invalidateGuildConfig(guildId);
+          });
+          logger.info('Reset guild AI Verdict daily limit', { adminId: interaction.user.id, guildId, usageDate });
+          await interaction.editReply({
+            flags: MessageFlags.IsComponentsV2,
+            components: [
+              new ContainerBuilder().addTextDisplayComponents(
+                new TextDisplayBuilder().setContent([
+                  '## ✅ AI Verdict Limit Reset',
+                  `Limit reset to \`${configStore.DEFAULT_AI_VISION_DAILY_LIMIT}\` for **${safeName(guild.name)}** (\`${guildId}\`). Daily usage for \`${usageDate}\` reset to \`0\`.`,
+                ].join('\n'))
+              ),
+            ],
+            allowedMentions: { parse: [] },
+          });
+          const { buildLimitResetAnnouncementPayload } = require('./super-admin-notice');
+          const { createTranslator } = require('./i18n');
+          const reviewChannel = config.reviewChannelId
+            ? await guild.channels.fetch(config.reviewChannelId).catch(() => null)
+            : null;
+          if (reviewChannel?.isTextBased?.()) {
+            const t = createTranslator(config.language);
+            reviewChannel.send(buildLimitResetAnnouncementPayload(t)).catch((error) => {
+              logger.warn('Failed to post AI Verdict limit reset announcement', { guildId, error: String(error) });
+            });
+          }
+        } catch (error) {
+          const v2ErrorPayload = {
+            flags: MessageFlags.IsComponentsV2,
+            components: [
+              new ContainerBuilder().addTextDisplayComponents(
+                new TextDisplayBuilder().setContent([
+                  '## ⚠️ AI Verdict Limit Reset Failed',
+                  String(error?.message || error || 'Unknown error').slice(0, 1500),
+                ].join('\n'))
+              ),
+            ],
+            allowedMentions: { parse: [] },
+          };
+          await interaction.editReply(v2ErrorPayload).catch((editError) => {
+            logger.warn('Failed to edit AI Verdict limit reset notice', {
+              guildId,
+              error: String(editError),
+            });
+          });
+        }
+        return true;
+      }
+
       if (parts[1] === 'guilds') {
         const requesterId = parts[3];
         if (requesterId !== interaction.user.id) throw new Error('This guild list belongs to another Super Admin.');
@@ -501,4 +564,4 @@ function createSuperAdminCommandManager({
   };
 }
 
-module.exports = { createSuperAdminCommandManager };
+module.exports = { createSuperAdminCommandManager, BUTTON_PREFIX };

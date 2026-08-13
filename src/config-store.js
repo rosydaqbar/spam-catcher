@@ -265,6 +265,7 @@ const DEFAULT_SPAM_CATCHER_CONFIG = {
   timezone: DEFAULT_TIMEZONE,
   language: DEFAULT_LANGUAGE,
   setupUserId: null,
+  inviterId: null,
 };
 
 function isTransientPostgresError(error) {
@@ -444,6 +445,9 @@ function normalizeSpamCatcherConfig(value) {
     language: normalizeLanguage(source.language),
     setupUserId: typeof source.setupUserId === 'string' && /^\d{17,20}$/.test(source.setupUserId)
       ? source.setupUserId
+      : null,
+    inviterId: typeof source.inviterId === 'string' && /^\d{17,20}$/.test(source.inviterId)
+      ? source.inviterId
       : null,
   };
 }
@@ -1340,13 +1344,19 @@ async function resetSpamCatcherSetup(guildId) {
   await ensureSpamCatcherConfigTable();
   await ensureSpamCatcherEventsTable();
   await ensureAutomaticSpamDetectionTables();
-  const config = normalizeSpamCatcherConfig(DEFAULT_SPAM_CATCHER_CONFIG);
-
   return runTransactionWithRetry('Spam Catcher setup reset', async (client) => {
     await client.query(
       'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
       [`guild-config:${guildId}`]
     );
+    const currentResult = await client.query(
+      'SELECT config_json FROM spam_catcher_config WHERE guild_id = $1',
+      [guildId]
+    );
+    const current = currentResult.rows[0]
+      ? normalizeSpamCatcherConfig(currentResult.rows[0].config_json)
+      : { ...DEFAULT_SPAM_CATCHER_CONFIG };
+    const config = normalizeSpamCatcherConfig({ ...DEFAULT_SPAM_CATCHER_CONFIG, inviterId: current.inviterId });
     await client.query(
       `
         INSERT INTO spam_catcher_config (guild_id, config_json, updated_at)

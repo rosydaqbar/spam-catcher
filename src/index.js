@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Client, Events, GatewayIntentBits, MessageFlags } = require('discord.js');
+const { Client, Events, GatewayIntentBits, MessageFlags, AuditLogEvent } = require('discord.js');
 const configStore = require('./config-store');
 const { createAutomaticSpamDetectionManager } = require('./bot/automatic-spam-detection');
 const { createSpamCatcherManager } = require('./bot/spam-catcher');
@@ -172,6 +172,27 @@ client.on(Events.MessageCreate, async (message) => {
     await spamCatcherManager.handleMessage(message);
   } catch (error) {
     console.error('Failed to handle Spam Catcher message:', error);
+  }
+});
+
+client.on(Events.GuildCreate, async (guild) => {
+  if (shuttingDown) return;
+  try {
+    const current = await configStore.getSpamCatcherConfig(guild.id);
+    if (current.inviterId) return;
+    const logs = await guild.fetchAuditLogs({ type: AuditLogEvent.BotAdd, limit: 1 }).catch(() => null);
+    const entry = logs && logs.entries.first();
+    const inviterId = entry && entry.executor ? entry.executor.id : null;
+    if (!inviterId) return;
+    await runGuildConfigOperation(guild.id, async () => {
+      const latest = await configStore.getSpamCatcherConfig(guild.id);
+      if (latest.inviterId) return;
+      await configStore.saveSpamCatcherConfig(guild.id, { ...latest, inviterId });
+      invalidateGuildConfig(guild.id);
+    });
+    logger.info('Captured guild inviter from audit log', { guildId: guild.id, inviterId });
+  } catch (error) {
+    logger.warn('Failed to capture guild inviter', { guildId: guild.id, error: String(error) });
   }
 });
 

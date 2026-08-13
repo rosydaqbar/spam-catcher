@@ -151,13 +151,20 @@ function createSuperAdminCommandManager({
     const visible = guilds.slice(page * GUILD_PAGE_SIZE, (page + 1) * GUILD_PAGE_SIZE);
     const configs = new Map();
     const inviters = new Map();
+    const owners = new Map();
     await Promise.all(visible.map(async (guild) => {
-      const [config, inviter] = await Promise.all([
-        configStore.getSpamCatcherConfig(guild.id).catch(() => null),
-        fetchInviter(guild),
-      ]);
+      const config = await configStore.getSpamCatcherConfig(guild.id).catch(() => null);
       configs.set(guild.id, config);
+      let inviter = null;
+      if (config && config.inviterId) {
+        inviter = await client.users.fetch(config.inviterId).catch(() => null);
+      }
+      if (!inviter) inviter = await fetchInviter(guild);
       inviters.set(guild.id, inviter);
+      if (!inviter) {
+        const owner = await guild.fetchOwner().catch(() => null);
+        owners.set(guild.id, owner && owner.user ? owner.user : null);
+      }
     }));
     const { isSetupComplete } = require('./setup-command');
     function setupStatusLine(config) {
@@ -172,10 +179,14 @@ function createSuperAdminCommandManager({
       ? visible.map((guild, index) => {
           const position = page * GUILD_PAGE_SIZE + index + 1;
           const config = configs.get(guild.id);
-          const status = setupStatusLine(config);
           const inviter = inviters.get(guild.id);
-          const inviterLine = inviter ? `\n   · invited by ${safeName(inviter.username)} (\`${inviter.id}\`)` : '';
-          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members\n   ${status}${inviterLine}`;
+          const owner = owners.get(guild.id);
+          const extraLine = inviter
+            ? `\n   · invited by ${safeName(inviter.username)} (\`${inviter.id}\`)`
+            : owner
+              ? `\n   · owner: ${safeName(owner.username)} (\`${owner.id}\`)`
+              : '';
+          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members\n   ${setupStatusLine(config)}${extraLine}`;
         })
       : ['No guilds are currently connected.'];
     const incomplete = visible.filter((guild) => {
@@ -228,14 +239,26 @@ function createSuperAdminCommandManager({
   }
 
   async function resolveHelpRecipient(guild, config) {
+    if (config && config.inviterId) {
+      const stored = await client.users.fetch(config.inviterId).catch(() => null);
+      if (stored) return stored;
+    }
     const inviter = await fetchInviter(guild);
-    if (inviter) return inviter;
-    if (config && config.setupUserId) {
-      try {
-        return await client.users.fetch(config.setupUserId);
-      } catch {
-        // Ignore unavailable setup users.
+    if (inviter) {
+      if (config && !config.inviterId) {
+        runGuildConfigOperation(guild.id, async () => {
+          const latest = await configStore.getSpamCatcherConfig(guild.id);
+          if (latest.inviterId) return;
+          await configStore.saveSpamCatcherConfig(guild.id, { ...latest, inviterId: inviter.id });
+          invalidateGuildConfig(guild.id);
+        }).catch((error) => logger.warn('Failed to persist inviterId on help click', { guildId: guild.id, error: String(error) }));
       }
+      return inviter;
+    }
+    const owner = await client.users.fetch(guild.ownerId).catch(() => null);
+    if (owner) return owner;
+    if (config && config.setupUserId) {
+      return client.users.fetch(config.setupUserId).catch(() => null);
     }
     return null;
   }
@@ -648,7 +671,11 @@ function createSuperAdminCommandManager({
         const guild = connectedGuild(guildId);
         await interaction.deferUpdate();
         await runGuildConfigOperation(guildId, async () => {
-          await configStore.saveSpamCatcherConfig(guildId, configStore.DEFAULT_SPAM_CATCHER_CONFIG);
+          const current = await configStore.getSpamCatcherConfig(guildId);
+          await configStore.saveSpamCatcherConfig(guildId, {
+            ...configStore.DEFAULT_SPAM_CATCHER_CONFIG,
+            inviterId: current.inviterId,
+          });
           invalidateGuildConfig(guildId);
         });
         logger.info('Reset guild settings to defaults', { adminId: interaction.user.id, guildId });

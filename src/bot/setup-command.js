@@ -31,6 +31,10 @@ const SETUP_PREFIX = 'spamsetup';
 const AI_VISION_WORDS_MODAL = `${SETUP_PREFIX}:aivision_words_modal`;
 const logger = createLogger('spam-catcher-setup');
 
+function isSetupComplete(config) {
+  return config.requiredChannelsSet === 1 && config.automaticSpamDetectionEnabled === true;
+}
+
 const TIMEOUT_OPTIONS = [
   { label: '10 Minutes', value: '10' },
   { label: '30 Minutes', value: '30' },
@@ -218,10 +222,6 @@ function createSetupCommandManager({
     if (!user) return false;
     return user.send(buildSetupCompleteDmPayload(t, { user: user.displayName || user.username, guild: guildName }))
       .then(() => true);
-  }
-
-  function isSetupComplete(config) {
-    return config.requiredChannelsSet === 1 && config.automaticSpamDetectionEnabled === true;
   }
 
   function maybeSendSetupCompleteDm(interaction, before, saved) {
@@ -1923,4 +1923,4 @@ function createSetupCommandManager({
   };
 }
 
-module.exports = { createSetupCommandManager };
+module.exports = { createSetupCommandManager, isSetupComplete };

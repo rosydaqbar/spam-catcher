@@ -135,16 +135,32 @@ function createSuperAdminCommandManager({
     return `${byType.year}-${byType.month}-${byType.day}`;
   }
 
-  function guildsPayload(requesterId, requestedPage = 0) {
+  async function guildsPayload(requesterId, requestedPage = 0) {
     const guilds = [...client.guilds.cache.values()]
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const totalPages = Math.max(1, Math.ceil(guilds.length / GUILD_PAGE_SIZE));
     const page = Math.max(0, Math.min(totalPages - 1, Number(requestedPage) || 0));
     const visible = guilds.slice(page * GUILD_PAGE_SIZE, (page + 1) * GUILD_PAGE_SIZE);
+    const configs = new Map();
+    await Promise.all(visible.map(async (guild) => {
+      const config = await configStore.getSpamCatcherConfig(guild.id).catch(() => null);
+      configs.set(guild.id, config);
+    }));
+    const { isSetupComplete } = require('./setup-command');
+    function setupStatusLine(config) {
+      if (config === null) return '❓ Setup status unavailable';
+      if (isSetupComplete(config)) return '✅ Setup finished';
+      const missing = [];
+      if (config.requiredChannelsSet !== 1) missing.push('required channels');
+      if (config.automaticSpamDetectionEnabled !== true) missing.push('auto-detection');
+      return `❌ Setup not finished · missing: ${missing.join(', ')}`;
+    }
     const lines = visible.length > 0
       ? visible.map((guild, index) => {
           const position = page * GUILD_PAGE_SIZE + index + 1;
-          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members`;
+          const config = configs.get(guild.id);
+          const status = setupStatusLine(config);
+          return `${position}. **${safeName(guild.name)}** · \`${guild.id}\` · ${guild.memberCount || 0} members\n   ${status}`;
         })
       : ['No guilds are currently connected.'];
     const payload = {
@@ -274,7 +290,7 @@ function createSuperAdminCommandManager({
     }
     try {
       if (subcommand === 'guilds') {
-        await interaction.reply(guildsPayload(interaction.user.id));
+        await interaction.reply(await guildsPayload(interaction.user.id));
         return true;
       }
 
@@ -468,7 +484,7 @@ function createSuperAdminCommandManager({
       if (parts[1] === 'guilds') {
         const requesterId = parts[3];
         if (requesterId !== interaction.user.id) throw new Error('This guild list belongs to another Super Admin.');
-        await interaction.update(guildsPayload(requesterId, Number(parts[2])));
+        await interaction.update(await guildsPayload(requesterId, Number(parts[2])));
         return true;
       }
 

@@ -199,6 +199,29 @@
     "resetFailedTitle": "Spam Catcher Tidak Dapat Direset",
     "resetFailed": "Silakan coba lagi. Jika masalah berlanjut, minta pemilik bot memeriksa log."
   },
+  "setupComplete": {
+    "title": "✅ Setup Selesai!",
+    "description": "Selamat, {user}! Spam Catcher kamu sudah terkonfigurasi dan siap melindungi **{guild}**.",
+    "testTitle": "🧪 Uji Coba Bot",
+    "testDescription": "Ikuti langkah-langkah ini untuk memastikan semuanya berjalan. **Gunakan akun Discord kedua** agar kamu tidak pernah memicu moderasi pada akunmu sendiri!",
+    "step1": "Gunakan **akun Discord kedua** — bukan akun admin kamu.",
+    "step2": "**Channel trap:** kirim pesan berisi gambar/file di channel trap — notifikasi trap dan kartu review muncul.",
+    "step3": "**Deteksi otomatis:** kirim beberapa pesan ber-attachment di channel biasa dalam satu window — **disarankan: gunakan gambar spam kasino asli** (gambar spam kasino yang biasa dipakai spammer) agar pemeriksaan AI vision terpicu secara realistis — kartu insiden muncul di channel review.",
+    "step4": "Tinjau kartu insiden di channel review — setujui atau tolak aksi yang disarankan dengan tombol confirm/cancel.",
+    "step5": "Periksa channel log — flow log menunjukkan progres dan hasil akhir (✅ tanpa spam / 🚨 bahaya).",
+    "helpTitle": "❓ Butuh Bantuan atau Reset?",
+    "helpDescription": "Ada masalah atau ingin mengatur ulang? Bergabunglah dengan server support kami, kami akan bantu.",
+    "supportButton": "Gabung ke Server Support"
+  },
+  "superNotice": {
+    "guildAddedTitle": "🎉 Spam Catcher Ditambahkan",
+    "guildAddedBody": "Sebuah guild baru saja menambahkan Spam Catcher: **{guild}** (`{guildId}`) — setup diselesaikan oleh **{user}** (`{userId}`).",
+    "limitUsedTitle": "⚠️ Limit AI Verdict Habis",
+    "limitUsedBody": "**{guild}** (`{guildId}`) sudah menghabiskan limit harian AI Verdict ({limit} per hari).",
+    "resetLimitButton": "Reset Limit",
+    "limitResetAnnounceTitle": "🔄 Limit AI Verdict Direset",
+    "limitResetAnnounceBody": "Limit harian AI Verdict kamu telah di-reset oleh developer."
+  },
   "check": {
     "title": "Cek Status User",
     "autoDetection": "Deteksi Otomatis",

@@ -199,6 +199,29 @@
     "resetFailedTitle": "Spam Catcher Could Not Be Reset",
     "resetFailed": "Please try again. If the problem continues, ask the bot owner to check the logs."
   },
+  "setupComplete": {
+    "title": "✅ Setup Complete!",
+    "description": "Congratulations, {user}! Your Spam Catcher is fully set up and ready to protect **{guild}**.",
+    "testTitle": "🧪 Test Your Bot",
+    "testDescription": "Follow these steps to verify everything works. **Use a second Discord account** so you never trigger moderation on your own account!",
+    "step1": "Log in with a **second Discord account** — not your admin account.",
+    "step2": "**Trap channels:** send a message with an image/file in a trap channel — the trap notice and review card appear.",
+    "step3": "**Automatic detection:** send several attachment messages in a normal channel within the window — **recommended: use a real casino spam image** (the typical casino-spam pictures spammers post) so the AI vision check triggers realistically — the incident card appears in the review channel.",
+    "step4": "Review the incident card — approve or reject the suggested action with the confirm/cancel buttons.",
+    "step5": "Check the log channel — the flow log shows progress and the final outcome (✅ no spam / 🚨 danger).",
+    "helpTitle": "❓ Need Help or Need to Reset?",
+    "helpDescription": "Running into issues or want to start over? Join our support server and we'll get you sorted.",
+    "supportButton": "Join Support Server"
+  },
+  "superNotice": {
+    "guildAddedTitle": "🎉 Spam Catcher Added",
+    "guildAddedBody": "A guild just added Spam Catcher: **{guild}** (`{guildId}`) — setup completed by **{user}** (`{userId}`).",
+    "limitUsedTitle": "⚠️ AI Verdict Limit Used Up",
+    "limitUsedBody": "**{guild}** (`{guildId}`) has used up its AI Verdict daily limit ({limit} per day).",
+    "resetLimitButton": "Reset Limit",
+    "limitResetAnnounceTitle": "🔄 AI Verdict Limit Reset",
+    "limitResetAnnounceBody": "Your AI Verdict daily limit has been reset by the developer."
+  },
   "check": {
     "title": "User Status Check",
     "autoDetection": "Automatic Detection",

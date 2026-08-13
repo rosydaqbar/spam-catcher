@@ -24,6 +24,7 @@ const { createLogger } = require('../lib/logger');
 const { GEMINI_API_KEY, OPENROUTER_API_KEY, parseAllowedGuildIds } = require('./env');
 const { createTranslator, languageName, normalizeLanguage } = require('./i18n');
 const { buildTrapNoticePayload } = require('./trap-notice-payload');
+const { sendGuildAddedNotice } = require('./super-admin-notice');
 
 const COMMAND_NAME = 'spam-catcher';
 const SETUP_PREFIX = 'spamsetup';
@@ -163,6 +164,85 @@ function createSetupCommandManager({
       ],
       allowedMentions: { parse: [] },
     };
+  }
+
+  function buildSetupCompleteDmPayload(t, { user, guild }) {
+    const container = new ContainerBuilder()
+      .setAccentColor(0x22c55e)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `## ${t('setupComplete.title')}`,
+          t('setupComplete.description', { user, guild }),
+        ].join('\n'))
+      )
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          `## ${t('setupComplete.testTitle')}`,
+          t('setupComplete.testDescription'),
+          '',
+          `1. ${t('setupComplete.step1')}`,
+          `2. ${t('setupComplete.step2')}`,
+          `3. ${t('setupComplete.step3')}`,
+          `4. ${t('setupComplete.step4')}`,
+          `5. ${t('setupComplete.step5')}`,
+        ].join('\n'))
+      )
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+      .addSectionComponents(
+        new SectionBuilder()
+          .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent([
+              `## ${t('setupComplete.helpTitle')}`,
+              t('setupComplete.helpDescription'),
+            ].join('\n'))
+          )
+          .setButtonAccessory(
+            new ButtonBuilder()
+              .setLabel(t('setupComplete.supportButton'))
+              .setStyle(ButtonStyle.Link)
+              .setURL('https://discord.gg/TG55gbpvyQ')
+          )
+      );
+
+    return {
+      flags: MessageFlags.IsComponentsV2,
+      components: [container],
+      allowedMentions: { parse: [] },
+    };
+  }
+
+  async function sendSetupCompleteDm(client, userId, guildName, config) {
+    const t = createTranslator(config.language);
+    const user = await client.users.fetch(userId);
+    if (!user) return false;
+    return user.send(buildSetupCompleteDmPayload(t, { user: user.displayName || user.username, guild: guildName }))
+      .then(() => true);
+  }
+
+  function isSetupComplete(config) {
+    return config.requiredChannelsSet === 1 && config.automaticSpamDetectionEnabled === true;
+  }
+
+  function maybeSendSetupCompleteDm(interaction, before, saved) {
+    if (isSetupComplete(before) || !isSetupComplete(saved)) return;
+    sendSetupCompleteDm(client, interaction.user.id, interaction.guild.name, saved).catch((error) => {
+      logger.warn('Failed to send setup-complete DM', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        error: String(error),
+      });
+    });
+    sendGuildAddedNotice(client, {
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      userId: interaction.user.id,
+      userName: interaction.user.displayName || interaction.user.username,
+      config: saved,
+    }).catch((error) => logger.warn('Failed to send guild-added notice to super admins', {
+      guildId: interaction.guildId,
+      error: String(error),
+    }));
   }
 
   function isAdmin(interaction) {
@@ -1446,6 +1526,7 @@ function createSetupCommandManager({
     await sendSettingsAudit(interaction, before, saved);
     const payload = await buildPanelPayload(panel, interaction.guildId, saved, statusMessage);
     await interaction.editReply(payload);
+    return { before, saved };
   }
 
   async function handleSelect(interaction) {
@@ -1455,6 +1536,7 @@ function createSetupCommandManager({
 
     if (type === 'review' || type === 'log') {
       const { before, saved, validity } = await saveRequiredChannelSelection(interaction, type);
+      maybeSendSetupCompleteDm(interaction, before, saved);
       const t = createTranslator(saved.language);
       const selectedChannelValid = type === 'log' ? validity.logValid : validity.reviewValid;
       const statusMessage = validity.bothValid
@@ -1691,7 +1773,7 @@ function createSetupCommandManager({
         ));
         return true;
       }
-      await saveAndUpdate(
+      const { before, saved } = await saveAndUpdate(
         interaction,
         (current) => ({ ...current, automaticSpamDetectionEnabled: value === 'on' }),
         value === 'on' ? t('setup.detectionEnabled') : t('setup.detectionDisabled'),
@@ -1701,6 +1783,7 @@ function createSetupCommandManager({
             && hasAutomaticDetectionPermissions(interaction.guild, current)
           : null
       );
+      maybeSendSetupCompleteDm(interaction, before, saved);
       return true;
     }
 
